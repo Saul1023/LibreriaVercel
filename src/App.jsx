@@ -125,9 +125,23 @@ export default function App() {
     return Array.from(merged);
   }, [productos]);
 
-  // --- Filtrado en tiempo real ---
+  // --- Estado para nueva categoría en el modal ---
+  const [isCustomCategory, setIsCustomCategory] = useState(false);
+  const [customCategoryName, setCustomCategoryName] = useState('');
+
+  // Normalizador de texto para búsqueda sin tildes
+  const normalizeText = (text) =>
+    (text || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+
+  // --- Filtrado en tiempo real multi-palabra ---
   const filteredProducts = useMemo(() => {
-    const term = searchTerm.toLowerCase().trim();
+    const normalizedTerm = normalizeText(searchTerm);
+    const searchTokens = normalizedTerm.split(/\s+/).filter(Boolean);
+
     return productos.filter(p => {
       // Si no es encargado, solo mostramos productos activos
       if (!isManagerMode && !p.activo) {
@@ -135,9 +149,13 @@ export default function App() {
       }
 
       const matchesCategory = selectedCategory === 'Todos' || p.categoria === selectedCategory;
-      const matchesSearch = !term || (p.nombre && p.nombre.toLowerCase().includes(term));
+      if (!matchesCategory) return false;
 
-      return matchesCategory && matchesSearch;
+      if (searchTokens.length === 0) return true;
+
+      // Buscar tanto en el nombre como en la categoría
+      const searchableString = normalizeText(`${p.nombre} ${p.categoria || ''}`);
+      return searchTokens.every(token => searchableString.includes(token));
     });
   }, [productos, searchTerm, selectedCategory, isManagerMode]);
 
@@ -267,6 +285,8 @@ export default function App() {
   // --- Crear / Editar Producto Modal ---
   const openCreateModal = () => {
     setEditingProduct(null);
+    setIsCustomCategory(false);
+    setCustomCategoryName('');
     setFormData({
       nombre: '',
       categoria: selectedCategory !== 'Todos' ? selectedCategory : 'Papelería',
@@ -278,6 +298,8 @@ export default function App() {
 
   const openEditModal = (product) => {
     setEditingProduct(product);
+    setIsCustomCategory(false);
+    setCustomCategoryName('');
     setFormData({
       nombre: product.nombre,
       categoria: product.categoria || 'Papelería',
@@ -293,6 +315,16 @@ export default function App() {
       showToast('El nombre del producto es obligatorio', 'error');
       return;
     }
+
+    const finalCategory = isCustomCategory 
+      ? customCategoryName.trim() 
+      : formData.categoria.trim();
+
+    if (isCustomCategory && !finalCategory) {
+      showToast('Por favor escribe el nombre de la nueva categoría', 'error');
+      return;
+    }
+
     const parsedPrice = parseFloat(formData.precio);
     if (isNaN(parsedPrice) || parsedPrice < 0) {
       showToast('Por favor introduce un precio válido en Bolivianos', 'error');
@@ -305,7 +337,7 @@ export default function App() {
         // Actualizar
         const payload = {
           nombre: formData.nombre.trim(),
-          categoria: formData.categoria.trim(),
+          categoria: finalCategory || 'Papelería',
           precio: parsedPrice,
           activo: formData.activo,
         };
@@ -327,7 +359,7 @@ export default function App() {
         // Crear
         const newPayload = {
           nombre: formData.nombre.trim(),
-          categoria: formData.categoria.trim(),
+          categoria: finalCategory || 'Papelería',
           precio: parsedPrice,
           activo: formData.activo,
         };
@@ -1031,22 +1063,50 @@ export default function App() {
 
               {/* Categoría */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Categoría
-                </label>
-                <div className="flex gap-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Categoría *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomCategory(!isCustomCategory);
+                      setCustomCategoryName('');
+                    }}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold underline"
+                  >
+                    {isCustomCategory ? '← Elegir existente' : '+ Crear nueva categoría'}
+                  </button>
+                </div>
+
+                {isCustomCategory ? (
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      autoFocus
+                      required
+                      value={customCategoryName}
+                      onChange={(e) => setCustomCategoryName(e.target.value)}
+                      placeholder="Ej: Cuadernos Tamaño Carta, Lapiceros Gel..."
+                      className="w-full px-3.5 py-2.5 bg-amber-50/50 border border-amber-300 rounded-xl text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                    />
+                    <p className="text-[11px] text-slate-400">
+                      Esta nueva categoría aparecerá automáticamente en la barra de filtros superior.
+                    </p>
+                  </div>
+                ) : (
                   <select
                     value={formData.categoria}
                     onChange={(e) => setFormData({ ...formData, categoria: e.target.value })}
                     className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
                   >
-                    {DEFAULT_CATEGORIES.filter(c => c !== 'Todos').map((cat) => (
+                    {allCategories.filter(c => c !== 'Todos').map((cat) => (
                       <option key={cat} value={cat}>
                         {cat}
                       </option>
                     ))}
                   </select>
-                </div>
+                )}
               </div>
 
               {/* Precio en Bolivianos */}
