@@ -34,6 +34,9 @@ const DEFAULT_CATEGORIES = [
   'Otros'
 ];
 
+// PIN de seguridad para Modo Encargado (configurable desde .env o Vercel con VITE_ADMIN_PIN)
+const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN || '1234';
+
 export default function App() {
   // --- Estados Principales ---
   const [productos, setProductos] = useState([]);
@@ -184,7 +187,7 @@ export default function App() {
     // Si completó los 4 dígitos, verificar automáticamente
     if (cleanVal && index === 3) {
       const fullPin = newDigits.join('');
-      if (fullPin === '1234') {
+      if (fullPin === ADMIN_PIN) {
         setIsManagerMode(true);
         setShowPinModal(false);
         showToast('¡Modo Encargado activado con éxito!', 'success');
@@ -200,12 +203,12 @@ export default function App() {
     }
     if (e.key === 'Enter') {
       const fullPin = pinDigits.join('');
-      if (fullPin === '1234') {
+      if (fullPin === ADMIN_PIN) {
         setIsManagerMode(true);
         setShowPinModal(false);
         showToast('¡Modo Encargado activado con éxito!', 'success');
       } else {
-        setPinError('PIN incorrecto.');
+        setPinError('PIN incorrecto. Intenta de nuevo.');
       }
     }
   };
@@ -989,7 +992,7 @@ export default function App() {
             )}
 
             <div className="text-[11px] text-slate-400 mb-6">
-              PIN predeterminado: <strong className="text-slate-600 font-mono">1234</strong>
+              Acceso protegido para personal autorizado
             </div>
 
             <div className="flex gap-2">
@@ -1003,12 +1006,12 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  if (pinDigits.join('') === '1234') {
+                  if (pinDigits.join('') === ADMIN_PIN) {
                     setIsManagerMode(true);
                     setShowPinModal(false);
                     showToast('¡Modo Encargado activado!', 'success');
                   } else {
-                    setPinError('PIN incorrecto. Intenta con 1234.');
+                    setPinError('PIN incorrecto. Intenta de nuevo.');
                   }
                 }}
                 className="w-1/2 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 transition shadow-sm shadow-indigo-600/30"
