@@ -1,0 +1,1147 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  Search,
+  Lock,
+  Unlock,
+  Plus,
+  Pencil,
+  Trash2,
+  Check,
+  X,
+  BookOpen,
+  Tag,
+  AlertCircle,
+  RefreshCw,
+  SlidersHorizontal,
+  DollarSign,
+  Eye,
+  EyeOff,
+  Sparkles
+} from 'lucide-react';
+import { supabase, isSupabaseConfigured } from './lib/supabase';
+
+// Categorías predeterminadas para filtrado rápido y creación
+const DEFAULT_CATEGORIES = [
+  'Todos',
+  'Bolígrafos',
+  'Cuadernos',
+  'Papelería',
+  'Marcadores',
+  'Pegamentos',
+  'Mochilas y Estuches',
+  'Tijeras y Corte',
+  'Reglas y Geometría',
+  'Otros'
+];
+
+export default function App() {
+  // --- Estados Principales ---
+  const [productos, setProductos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('Todos');
+  const [viewMode, setViewMode] = useState('table'); // 'table' | 'grid'
+
+  // --- Modo Encargado y PIN ---
+  const [isManagerMode, setIsManagerMode] = useState(false);
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [pinDigits, setPinDigits] = useState(['', '', '', '']);
+  const [pinError, setPinError] = useState('');
+  const pinInputRefs = [useRef(null), useRef(null), useRef(null), useRef(null)];
+
+  // --- Modal de Producto (Crear / Editar) ---
+  const [productModalOpen, setProductModalOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null); // null = nuevo
+  const [formData, setFormData] = useState({
+    nombre: '',
+    categoria: 'Papelería',
+    precio: '',
+    activo: true,
+  });
+  const [submittingProduct, setSubmittingProduct] = useState(false);
+
+  // --- Edición rápida en línea del precio ---
+  const [quickEditingId, setQuickEditingId] = useState(null);
+  const [quickPriceValue, setQuickPriceValue] = useState('');
+
+  // --- Modal de Confirmación de Eliminación ---
+  const [deletingProduct, setDeletingProduct] = useState(null);
+
+  // --- Notificaciones Toast ---
+  const [toast, setToast] = useState(null); // { message, type: 'success'|'error'|'info' }
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 3500);
+  };
+
+  // --- Carga inicial de datos desde Supabase ---
+  const fetchProductos = async () => {
+    setLoading(true);
+    try {
+      if (!isSupabaseConfigured) {
+        // Modo demostración si aún no han pegado la clave
+        console.warn('Supabase ANON KEY no configurada. Usando datos demo de referencia.');
+        const mockData = [
+          { id: 1, nombre: 'Cuaderno Espiral 100 Hojas Líder', categoria: 'Cuadernos', precio: 15.50, activo: true, created_at: new Date().toISOString() },
+          { id: 2, nombre: 'Bolígrafo Faber-Castell 070 Azul', categoria: 'Bolígrafos', precio: 3.50, activo: true, created_at: new Date().toISOString() },
+          { id: 3, nombre: 'Resma de Papel Bond Chamex A4 75g', categoria: 'Papelería', precio: 38.00, activo: true, created_at: new Date().toISOString() },
+          { id: 4, nombre: 'Marcador Permanente Sharpie Negro', categoria: 'Marcadores', precio: 8.00, activo: true, created_at: new Date().toISOString() },
+          { id: 5, nombre: 'Pegamento en Barra Pritt 20g', categoria: 'Pegamentos', precio: 12.00, activo: true, created_at: new Date().toISOString() },
+          { id: 6, nombre: 'Juego Geométrico Maped 4 piezas', categoria: 'Reglas y Geometría', precio: 18.00, activo: true, created_at: new Date().toISOString() },
+          { id: 7, nombre: 'Tijera Escolar Punta Roma 13cm', categoria: 'Tijeras y Corte', precio: 6.50, activo: true, created_at: new Date().toISOString() },
+          { id: 8, nombre: 'Bolígrafo Pilot G2 Gel 0.7 Negro', categoria: 'Bolígrafos', precio: 14.00, activo: false, created_at: new Date().toISOString() },
+        ];
+        setProductos(mockData);
+        setLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('productos')
+        .select('*')
+        .order('nombre', { ascending: true });
+
+      if (error) throw error;
+      setProductos(data || []);
+    } catch (err) {
+      console.error('Error al cargar productos:', err);
+      showToast('Error de conexión con la base de datos: ' + (err.message || 'Verifica Supabase'), 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchProductos();
+  }, []);
+
+  // --- Lista de categorías dinámicas ---
+  const allCategories = useMemo(() => {
+    const fromData = new Set(productos.map(p => p.categoria).filter(Boolean));
+    const merged = new Set(['Todos', ...DEFAULT_CATEGORIES.slice(1), ...Array.from(fromData)]);
+    return Array.from(merged);
+  }, [productos]);
+
+  // --- Filtrado en tiempo real ---
+  const filteredProducts = useMemo(() => {
+    const term = searchTerm.toLowerCase().trim();
+    return productos.filter(p => {
+      // Si no es encargado, solo mostramos productos activos
+      if (!isManagerMode && !p.activo) {
+        return false;
+      }
+
+      const matchesCategory = selectedCategory === 'Todos' || p.categoria === selectedCategory;
+      const matchesSearch = !term || (p.nombre && p.nombre.toLowerCase().includes(term));
+
+      return matchesCategory && matchesSearch;
+    });
+  }, [productos, searchTerm, selectedCategory, isManagerMode]);
+
+  // --- Control de PIN para Modo Encargado ---
+  const handleOpenPinModal = () => {
+    setPinDigits(['', '', '', '']);
+    setPinError('');
+    setShowPinModal(true);
+    setTimeout(() => {
+      pinInputRefs[0].current?.focus();
+    }, 100);
+  };
+
+  const handlePinDigitChange = (index, value) => {
+    // Aceptar solo números
+    const cleanVal = value.replace(/\D/g, '').slice(-1);
+    const newDigits = [...pinDigits];
+    newDigits[index] = cleanVal;
+    setPinDigits(newDigits);
+    setPinError('');
+
+    if (cleanVal && index < 3) {
+      pinInputRefs[index + 1].current?.focus();
+    }
+
+    // Si completó los 4 dígitos, verificar automáticamente
+    if (cleanVal && index === 3) {
+      const fullPin = newDigits.join('');
+      if (fullPin === '1234') {
+        setIsManagerMode(true);
+        setShowPinModal(false);
+        showToast('¡Modo Encargado activado con éxito!', 'success');
+      } else {
+        setPinError('PIN incorrecto. Intenta de nuevo.');
+      }
+    }
+  };
+
+  const handlePinKeyDown = (index, e) => {
+    if (e.key === 'Backspace' && !pinDigits[index] && index > 0) {
+      pinInputRefs[index - 1].current?.focus();
+    }
+    if (e.key === 'Enter') {
+      const fullPin = pinDigits.join('');
+      if (fullPin === '1234') {
+        setIsManagerMode(true);
+        setShowPinModal(false);
+        showToast('¡Modo Encargado activado con éxito!', 'success');
+      } else {
+        setPinError('PIN incorrecto.');
+      }
+    }
+  };
+
+  const handleExitManagerMode = () => {
+    setIsManagerMode(false);
+    setQuickEditingId(null);
+    showToast('Modo Encargado finalizado. Vista bloqueada.', 'info');
+  };
+
+  // --- Edición rápida en línea del precio ---
+  const startQuickEdit = (product, e) => {
+    e.stopPropagation();
+    setQuickEditingId(product.id);
+    setQuickPriceValue(product.precio.toString());
+  };
+
+  const cancelQuickEdit = () => {
+    setQuickEditingId(null);
+    setQuickPriceValue('');
+  };
+
+  const saveQuickPrice = async (productId) => {
+    const numPrice = parseFloat(quickPriceValue);
+    if (isNaN(numPrice) || numPrice < 0) {
+      showToast('Ingresa un precio válido en Bolivianos', 'error');
+      return;
+    }
+
+    try {
+      if (isSupabaseConfigured) {
+        const { error } = await supabase
+          .from('productos')
+          .update({ precio: numPrice })
+          .eq('id', productId);
+
+        if (error) throw error;
+      }
+
+      setProductos(prev =>
+        prev.map(p => (p.id === productId ? { ...p, precio: numPrice } : p))
+      );
+      showToast('Precio actualizado correctamente', 'success');
+      setQuickEditingId(null);
+    } catch (err) {
+      console.error(err);
+      showToast('Error al actualizar precio: ' + err.message, 'error');
+    }
+  };
+
+  // --- Alternar Estado Activo / Inactivo ---
+  const toggleProductActive = async (product) => {
+    const updatedStatus = !product.activo;
+    try {
+      if (isSupabaseConfigured) {
+        const { error } = await supabase
+          .from('productos')
+          .update({ activo: updatedStatus })
+          .eq('id', product.id);
+
+        if (error) throw error;
+      }
+
+      setProductos(prev =>
+        prev.map(p => (p.id === product.id ? { ...p, activo: updatedStatus } : p))
+      );
+      showToast(
+        updatedStatus ? `"${product.nombre}" reactivado` : `"${product.nombre}" desactivado`,
+        'info'
+      );
+    } catch (err) {
+      console.error(err);
+      showToast('Error al cambiar estado: ' + err.message, 'error');
+    }
+  };
+
+  // --- Crear / Editar Producto Modal ---
+  const openCreateModal = () => {
+    setEditingProduct(null);
+    setFormData({
+      nombre: '',
+      categoria: selectedCategory !== 'Todos' ? selectedCategory : 'Papelería',
+      precio: '',
+      activo: true,
+    });
+    setProductModalOpen(true);
+  };
+
+  const openEditModal = (product) => {
+    setEditingProduct(product);
+    setFormData({
+      nombre: product.nombre,
+      categoria: product.categoria || 'Papelería',
+      precio: product.precio.toString(),
+      activo: product.activo ?? true,
+    });
+    setProductModalOpen(true);
+  };
+
+  const handleSaveProduct = async (e) => {
+    e.preventDefault();
+    if (!formData.nombre.trim()) {
+      showToast('El nombre del producto es obligatorio', 'error');
+      return;
+    }
+    const parsedPrice = parseFloat(formData.precio);
+    if (isNaN(parsedPrice) || parsedPrice < 0) {
+      showToast('Por favor introduce un precio válido en Bolivianos', 'error');
+      return;
+    }
+
+    setSubmittingProduct(true);
+    try {
+      if (editingProduct) {
+        // Actualizar
+        const payload = {
+          nombre: formData.nombre.trim(),
+          categoria: formData.categoria.trim(),
+          precio: parsedPrice,
+          activo: formData.activo,
+        };
+
+        if (isSupabaseConfigured) {
+          const { error } = await supabase
+            .from('productos')
+            .update(payload)
+            .eq('id', editingProduct.id);
+
+          if (error) throw error;
+        }
+
+        setProductos(prev =>
+          prev.map(p => (p.id === editingProduct.id ? { ...p, ...payload } : p))
+        );
+        showToast(`Producto "${formData.nombre}" actualizado con éxito`, 'success');
+      } else {
+        // Crear
+        const newPayload = {
+          nombre: formData.nombre.trim(),
+          categoria: formData.categoria.trim(),
+          precio: parsedPrice,
+          activo: formData.activo,
+        };
+
+        if (isSupabaseConfigured) {
+          const { data, error } = await supabase
+            .from('productos')
+            .insert([newPayload])
+            .select();
+
+          if (error) throw error;
+          if (data && data[0]) {
+            setProductos(prev => [data[0], ...prev]);
+          } else {
+            await fetchProductos();
+          }
+        } else {
+          // Demo fallback
+          const fakeItem = {
+            ...newPayload,
+            id: Date.now(),
+            created_at: new Date().toISOString(),
+          };
+          setProductos(prev => [fakeItem, ...prev]);
+        }
+
+        showToast(`"${formData.nombre}" registrado exitosamente`, 'success');
+      }
+
+      setProductModalOpen(false);
+    } catch (err) {
+      console.error(err);
+      showToast('Error al guardar producto: ' + err.message, 'error');
+    } finally {
+      setSubmittingProduct(false);
+    }
+  };
+
+  // --- Eliminar Producto ---
+  const confirmDelete = async () => {
+    if (!deletingProduct) return;
+    try {
+      if (isSupabaseConfigured) {
+        const { error } = await supabase
+          .from('productos')
+          .delete()
+          .eq('id', deletingProduct.id);
+
+        if (error) throw error;
+      }
+
+      setProductos(prev => prev.filter(p => p.id !== deletingProduct.id));
+      showToast(`Producto "${deletingProduct.nombre}" eliminado`, 'info');
+      setDeletingProduct(null);
+    } catch (err) {
+      console.error(err);
+      showToast('Error al eliminar: ' + err.message, 'error');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+      {/* ===================== NOTIFICACIÓN TOAST ===================== */}
+      {toast && (
+        <div className="fixed top-5 right-5 z-50 animate-bounce duration-300">
+          <div
+            className={`flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg border text-sm font-medium ${
+              toast.type === 'success'
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-emerald-600/20'
+                : toast.type === 'error'
+                ? 'bg-rose-600 text-white border-rose-500 shadow-rose-600/20'
+                : 'bg-slate-800 text-white border-slate-700 shadow-slate-900/20'
+            }`}
+          >
+            {toast.type === 'success' && <Check className="w-5 h-5 text-emerald-200" />}
+            {toast.type === 'error' && <AlertCircle className="w-5 h-5 text-rose-200" />}
+            {toast.type === 'info' && <Sparkles className="w-5 h-5 text-amber-200" />}
+            <span>{toast.message}</span>
+            <button
+              onClick={() => setToast(null)}
+              className="ml-2 hover:opacity-80 transition-opacity"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== ALERTA SI FALTA CONFIGURAR SUPABASE ===================== */}
+      {!isSupabaseConfigured && (
+        <div className="bg-amber-500 text-amber-950 px-4 py-2.5 text-xs sm:text-sm font-medium border-b border-amber-600/30 flex items-center justify-between">
+          <div className="flex items-center gap-2 max-w-4xl mx-auto w-full">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-950" />
+            <span>
+              <strong>Aviso de Configuración:</strong> Falta tu <code>VITE_SUPABASE_ANON_KEY</code> en el archivo <code>.env</code>. Actualmente visualizando datos demostrativos.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== ENCABEZADO SUPERIOR ===================== */}
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-sm transition-all">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-20 flex items-center justify-between gap-3">
+          {/* Logo y Nombre */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-br from-indigo-600 to-indigo-800 text-white flex items-center justify-center shadow-md shadow-indigo-600/20 shrink-0">
+              <BookOpen className="w-5 h-5 sm:w-6 sm:h-6" />
+            </div>
+            <div className="truncate">
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg sm:text-2xl font-bold tracking-tight text-slate-900 truncate">
+                  Librería & Papelería
+                </h1>
+                {isManagerMode && (
+                  <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+                    <Unlock className="w-3 h-3" /> Encargado
+                  </span>
+                )}
+              </div>
+              <p className="text-xs sm:text-sm text-slate-500 truncate">
+                Consulta y Gestión Rápida de Precios
+              </p>
+            </div>
+          </div>
+
+          {/* Acciones de Encabezado */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {isManagerMode ? (
+              <>
+                <button
+                  onClick={openCreateModal}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 sm:py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-sm transition-all shadow-emerald-600/20 active:scale-95"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span className="hidden sm:inline">Nuevo Producto</span>
+                  <span className="sm:hidden">Nuevo</span>
+                </button>
+                <button
+                  onClick={handleExitManagerMode}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 sm:py-2.5 bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-300 hover:border-rose-200 rounded-xl text-xs sm:text-sm font-medium transition-all active:scale-95"
+                  title="Bloquear modo encargado"
+                >
+                  <Unlock className="w-4 h-4 text-amber-600" />
+                  <span className="hidden md:inline">Salir Encargado</span>
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleOpenPinModal}
+                className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2 sm:py-2.5 bg-slate-900 hover:bg-indigo-900 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-sm transition-all shadow-slate-900/10 active:scale-95"
+              >
+                <Lock className="w-4 h-4" />
+                <span>Modo Encargado</span>
+              </button>
+            )}
+
+            <button
+              onClick={fetchProductos}
+              disabled={loading}
+              title="Recargar catálogo"
+              className="p-2 sm:p-2.5 text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-xl transition-all"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-indigo-600' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Banner destacado de Modo Encargado en móviles */}
+        {isManagerMode && (
+          <div className="sm:hidden bg-amber-500/15 border-t border-amber-300 px-4 py-1.5 flex items-center justify-between text-xs text-amber-900 font-medium">
+            <span className="flex items-center gap-1.5">
+              <Unlock className="w-3.5 h-3.5 text-amber-700" /> Modo Encargado Activo
+            </span>
+            <button
+              onClick={handleExitManagerMode}
+              className="underline font-semibold text-amber-950"
+            >
+              Bloquear
+            </button>
+          </div>
+        )}
+      </header>
+
+      {/* ===================== CUERPO PRINCIPAL ===================== */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-8 flex-1 w-full space-y-6">
+        
+        {/* ===================== BARRA DE BÚSQUEDA Y CONTROLES ===================== */}
+        <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200/80 space-y-4">
+          <div className="flex flex-col sm:flex-row gap-3">
+            {/* Input de Búsqueda Instantánea */}
+            <div className="relative flex-1">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Buscar por nombre (ej: Cuaderno, Bolígrafo Faber, Resma)..."
+                className="w-full pl-11 pr-10 py-3 sm:py-3.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 placeholder-slate-400 font-medium text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all"
+                autoComplete="off"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                  title="Limpiar búsqueda"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Alternador de Vista (Tabla / Cuadrícula) */}
+            <div className="flex items-center justify-between sm:justify-end gap-2 text-xs font-medium text-slate-600">
+              <span className="sm:hidden text-slate-500">
+                {filteredProducts.length} producto{filteredProducts.length !== 1 ? 's' : ''}
+              </span>
+              <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+                <button
+                  onClick={() => setViewMode('table')}
+                  className={`px-3 py-1.5 rounded-lg transition-all ${
+                    viewMode === 'table'
+                      ? 'bg-white shadow text-indigo-700 font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Lista
+                </button>
+                <button
+                  onClick={() => setViewMode('grid')}
+                  className={`px-3 py-1.5 rounded-lg transition-all ${
+                    viewMode === 'grid'
+                      ? 'bg-white shadow text-indigo-700 font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Tarjetas
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Filtros Rápidos por Categoría */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-1 no-scrollbar text-xs sm:text-sm">
+            <span className="text-slate-400 shrink-0 font-medium flex items-center gap-1 pr-1">
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+            </span>
+            {allCategories.map((cat) => {
+              const isSelected = selectedCategory === cat;
+              return (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`px-3.5 py-1.5 rounded-full shrink-0 font-medium transition-all ${
+                    isSelected
+                      ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/30'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200/80'
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Resumen de Resultados */}
+        <div className="flex items-center justify-between px-1 text-xs sm:text-sm text-slate-500">
+          <div>
+            Mostrando <strong>{filteredProducts.length}</strong> {filteredProducts.length === 1 ? 'producto' : 'productos'}
+            {selectedCategory !== 'Todos' && (
+              <span> en <strong className="text-slate-700">{selectedCategory}</strong></span>
+            )}
+            {searchTerm && (
+              <span> para "<strong className="text-slate-700">{searchTerm}</strong>"</span>
+            )}
+          </div>
+          {isManagerMode && (
+            <span className="text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200/60 font-medium text-xs">
+              Edición de precios habilitada
+            </span>
+          )}
+        </div>
+
+        {/* ===================== LISTADO DE PRODUCTOS ===================== */}
+        {loading ? (
+          <div className="bg-white rounded-2xl p-8 border border-slate-200 shadow-sm space-y-4">
+            <div className="h-6 bg-slate-200 rounded-md w-1/4 animate-pulse" />
+            <div className="space-y-3">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <div key={i} className="h-16 bg-slate-100 rounded-xl animate-pulse flex items-center justify-between px-4">
+                  <div className="space-y-2 w-1/3">
+                    <div className="h-4 bg-slate-200 rounded w-full" />
+                    <div className="h-3 bg-slate-200 rounded w-1/2" />
+                  </div>
+                  <div className="h-8 bg-slate-200 rounded w-20" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : filteredProducts.length === 0 ? (
+          <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-sm">
+            <div className="w-16 h-16 rounded-2xl bg-slate-100 text-slate-400 mx-auto flex items-center justify-center mb-4">
+              <Search className="w-8 h-8" />
+            </div>
+            <h3 className="text-base sm:text-lg font-bold text-slate-800">
+              No se encontraron productos
+            </h3>
+            <p className="text-slate-500 text-sm mt-1 max-w-md mx-auto">
+              {searchTerm
+                ? `No existe ningún producto con el término "${searchTerm}". Intenta buscar con otra palabra.`
+                : 'No hay productos registrados en esta categoría.'}
+            </p>
+            <div className="mt-5 flex justify-center gap-3">
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition-all"
+                >
+                  Limpiar búsqueda
+                </button>
+              )}
+              {isManagerMode && (
+                <button
+                  onClick={openCreateModal}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition-all inline-flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4" /> Agregar Producto
+                </button>
+              )}
+            </div>
+          </div>
+        ) : viewMode === 'table' ? (
+          /* ===================== VISTA TABLA / FILAS ===================== */
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 text-xs uppercase font-bold tracking-wider">
+                    <th className="py-3.5 px-4 sm:px-6">Producto</th>
+                    <th className="py-3.5 px-4 hidden sm:table-cell">Categoría</th>
+                    <th className="py-3.5 px-4 text-right">Precio (Bolivianos)</th>
+                    {isManagerMode && (
+                      <th className="py-3.5 px-4 text-center w-36">Gestión</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {filteredProducts.map((p) => {
+                    const isQuickEditing = quickEditingId === p.id;
+                    return (
+                      <tr
+                        key={p.id}
+                        className={`hover:bg-slate-50/80 transition-colors ${
+                          !p.activo ? 'bg-slate-50/40 text-slate-400' : ''
+                        }`}
+                      >
+                        {/* Nombre del Producto */}
+                        <td className="py-3.5 px-4 sm:px-6 align-middle">
+                          <div className="font-semibold text-slate-900 text-sm sm:text-base leading-snug">
+                            {p.nombre}
+                          </div>
+                          <div className="sm:hidden mt-0.5 flex items-center gap-1.5">
+                            <span className="inline-block bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-[11px] font-medium">
+                              {p.categoria || 'Sin categoría'}
+                            </span>
+                            {!p.activo && (
+                              <span className="text-[11px] font-medium text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">
+                                Inactivo
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Categoría */}
+                        <td className="py-3.5 px-4 hidden sm:table-cell align-middle">
+                          <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-200/60">
+                            <Tag className="w-3 h-3 text-slate-400" />
+                            {p.categoria || 'Sin categoría'}
+                          </span>
+                          {!p.activo && (
+                            <span className="ml-2 text-xs font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded border border-rose-200/60">
+                              Inactivo
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Precio Destacado */}
+                        <td className="py-3.5 px-4 text-right align-middle">
+                          {isQuickEditing ? (
+                            <div className="flex items-center justify-end gap-1.5">
+                              <span className="text-xs font-bold text-slate-500">Bs.</span>
+                              <input
+                                type="number"
+                                step="0.10"
+                                min="0"
+                                value={quickPriceValue}
+                                onChange={(e) => setQuickPriceValue(e.target.value)}
+                                className="w-24 px-2 py-1 text-right font-bold text-slate-900 bg-amber-50 border border-amber-400 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') saveQuickPrice(p.id);
+                                  if (e.key === 'Escape') cancelQuickEdit();
+                                }}
+                              />
+                              <button
+                                onClick={() => saveQuickPrice(p.id)}
+                                className="p-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
+                                title="Guardar precio"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={cancelQuickEdit}
+                                className="p-1.5 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition"
+                                title="Cancelar"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <div
+                              onClick={(e) => isManagerMode && startQuickEdit(p, e)}
+                              className={`inline-flex items-baseline gap-1 px-3 py-1.5 rounded-xl font-bold tracking-tight text-base sm:text-lg transition-all ${
+                                isManagerMode
+                                  ? 'cursor-pointer hover:bg-amber-100/70 bg-amber-50/50 text-amber-950 border border-amber-200/80'
+                                  : 'bg-emerald-50 text-emerald-800 border border-emerald-100'
+                              }`}
+                              title={isManagerMode ? 'Clic para editar precio rápidamente' : ''}
+                            >
+                              <span className="text-xs sm:text-sm font-semibold opacity-80">Bs.</span>
+                              <span>{Number(p.precio).toFixed(2)}</span>
+                              {isManagerMode && (
+                                <Pencil className="w-3 h-3 text-amber-600 ml-1 opacity-70" />
+                              )}
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Acciones de Encargado */}
+                        {isManagerMode && (
+                          <td className="py-3.5 px-4 text-center align-middle">
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => openEditModal(p)}
+                                className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
+                                title="Editar producto completo"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => toggleProductActive(p)}
+                                className={`p-1.5 rounded-lg transition ${
+                                  p.activo
+                                    ? 'text-emerald-600 hover:text-amber-600 hover:bg-amber-50'
+                                    : 'text-slate-400 hover:text-emerald-600 hover:bg-emerald-50'
+                                }`}
+                                title={p.activo ? 'Desactivar producto' : 'Activar producto'}
+                              >
+                                {p.activo ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                              </button>
+                              <button
+                                onClick={() => setDeletingProduct(p)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                                title="Eliminar producto"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          /* ===================== VISTA CUADRÍCULA / TARJETAS ===================== */
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {filteredProducts.map((p) => {
+              const isQuickEditing = quickEditingId === p.id;
+              return (
+                <div
+                  key={p.id}
+                  className={`bg-white rounded-2xl p-4 sm:p-5 border shadow-sm flex flex-col justify-between transition-all hover:shadow-md ${
+                    !p.activo ? 'border-slate-200 bg-slate-50/50 opacity-70' : 'border-slate-200/90'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-md text-xs font-medium">
+                        <Tag className="w-3 h-3 text-slate-400" />
+                        {p.categoria || 'Sin categoría'}
+                      </span>
+                      {!p.activo && (
+                        <span className="text-[11px] font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                          Inactivo
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="font-bold text-slate-900 text-base line-clamp-2 leading-snug">
+                      {p.nombre}
+                    </h3>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+                    <div>
+                      <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
+                        Precio
+                      </div>
+                      {isQuickEditing ? (
+                        <div className="flex items-center gap-1 mt-1">
+                          <input
+                            type="number"
+                            step="0.10"
+                            min="0"
+                            value={quickPriceValue}
+                            onChange={(e) => setQuickPriceValue(e.target.value)}
+                            className="w-20 px-2 py-1 text-right font-bold text-slate-900 bg-amber-50 border border-amber-400 rounded-lg text-sm"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => saveQuickPrice(p.id)}
+                            className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={cancelQuickEdit}
+                            className="p-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div
+                          onClick={(e) => isManagerMode && startQuickEdit(p, e)}
+                          className={`text-xl font-extrabold flex items-baseline gap-1 mt-0.5 ${
+                            isManagerMode
+                              ? 'text-amber-950 cursor-pointer hover:underline'
+                              : 'text-emerald-700'
+                          }`}
+                        >
+                          <span className="text-xs font-semibold">Bs.</span>
+                          <span>{Number(p.precio).toFixed(2)}</span>
+                          {isManagerMode && <Pencil className="w-3 h-3 text-amber-600 ml-1" />}
+                        </div>
+                      )}
+                    </div>
+
+                    {isManagerMode && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => openEditModal(p)}
+                          className="p-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
+                          title="Editar producto"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => toggleProductActive(p)}
+                          className="p-2 text-slate-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition"
+                          title={p.activo ? 'Desactivar' : 'Activar'}
+                        >
+                          {p.activo ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                        </button>
+                        <button
+                          onClick={() => setDeletingProduct(p)}
+                          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                          title="Eliminar"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </main>
+
+      {/* ===================== MODAL DE PIN (MODO ENCARGADO) ===================== */}
+      {showPinModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 sm:p-8 shadow-2xl border border-slate-100 text-center relative">
+            <button
+              onClick={() => setShowPinModal(false)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-slate-600 p-1"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="w-14 h-14 bg-amber-100 text-amber-700 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-sm shadow-amber-600/10">
+              <Lock className="w-7 h-7" />
+            </div>
+
+            <h3 className="text-xl font-bold text-slate-900">Modo Encargado</h3>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1 mb-6">
+              Ingresa el PIN de seguridad de 4 dígitos para habilitar la edición de precios.
+            </p>
+
+            {/* Inputs de 4 Dígitos */}
+            <div className="flex justify-center gap-3 mb-4">
+              {pinDigits.map((digit, idx) => (
+                <input
+                  key={idx}
+                  ref={pinInputRefs[idx]}
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={1}
+                  value={digit}
+                  onChange={(e) => handlePinDigitChange(idx, e.target.value)}
+                  onKeyDown={(e) => handlePinKeyDown(idx, e)}
+                  className="w-12 h-14 text-center text-2xl font-bold rounded-xl border-2 border-slate-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/20 bg-slate-50 text-slate-900 focus:bg-white transition-all outline-none"
+                />
+              ))}
+            </div>
+
+            {pinError && (
+              <div className="text-rose-600 text-xs font-semibold mb-4 flex items-center justify-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" />
+                {pinError}
+              </div>
+            )}
+
+            <div className="text-[11px] text-slate-400 mb-6">
+              PIN predeterminado: <strong className="text-slate-600 font-mono">1234</strong>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPinModal(false)}
+                className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-medium text-sm hover:bg-slate-50 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (pinDigits.join('') === '1234') {
+                    setIsManagerMode(true);
+                    setShowPinModal(false);
+                    showToast('¡Modo Encargado activado!', 'success');
+                  } else {
+                    setPinError('PIN incorrecto. Intenta con 1234.');
+                  }
+                }}
+                className="w-1/2 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 transition shadow-sm shadow-indigo-600/30"
+              >
+                Ingresar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== MODAL DE CREAR / EDITAR PRODUCTO ===================== */}
+      {productModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border border-slate-100 relative">
+            <button
+              onClick={() => setProductModalOpen(false)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-slate-600 p-1"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center font-bold">
+                {editingProduct ? <Pencil className="w-5 h-5" /> : <Plus className="w-5 h-5" />}
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">
+                  {editingProduct ? 'Editar Producto' : 'Registrar Nuevo Producto'}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {editingProduct ? 'Modifica los datos del inventario' : 'Ingresa los datos para agregarlo al catálogo'}
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveProduct} className="space-y-4">
+              {/* Nombre */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Nombre del Producto *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.nombre}
+                  onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
+                  placeholder="Ej: Cuaderno Espiral 100 Hojas"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                />
+              </div>
+
+              {/* Categoría */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Categoría
+                </label>
+                <div className="flex gap-2">
+                  <select
+                    value={formData.categoria}
+                    onChange={(e) => setFormData({ ...formData, categoria: e.target.value })}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                  >
+                    {DEFAULT_CATEGORIES.filter(c => c !== 'Todos').map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Precio en Bolivianos */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Precio (en Bolivianos - Bs.) *
+                </label>
+                <div className="relative">
+                  <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">
+                    Bs.
+                  </div>
+                  <input
+                    type="number"
+                    step="0.10"
+                    min="0"
+                    required
+                    value={formData.precio}
+                    onChange={(e) => setFormData({ ...formData, precio: e.target.value })}
+                    placeholder="0.00"
+                    className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-base font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              {/* Estado Activo */}
+              <div className="flex items-center gap-3 pt-2">
+                <input
+                  type="checkbox"
+                  id="activoCheck"
+                  checked={formData.activo}
+                  onChange={(e) => setFormData({ ...formData, activo: e.target.checked })}
+                  className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
+                />
+                <label htmlFor="activoCheck" className="text-sm font-medium text-slate-700 cursor-pointer">
+                  Producto visible y disponible en mostrador (Activo)
+                </label>
+              </div>
+
+              {/* Botones de Acción */}
+              <div className="flex gap-2.5 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setProductModalOpen(false)}
+                  className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-medium text-sm hover:bg-slate-50 transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingProduct}
+                  className="w-1/2 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm transition shadow-sm shadow-indigo-600/30 disabled:opacity-50"
+                >
+                  {submittingProduct ? 'Guardando...' : editingProduct ? 'Actualizar' : 'Guardar'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== MODAL DE CONFIRMAR ELIMINACIÓN ===================== */}
+      {deletingProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 text-center shadow-2xl border border-slate-100">
+            <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900">¿Eliminar producto?</h3>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1 mb-5">
+              Se eliminará permanentemente <strong>"{deletingProduct.nombre}"</strong>. Esta acción no se puede deshacer.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setDeletingProduct(null)}
+                className="w-1/2 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-medium text-sm hover:bg-slate-50 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                className="w-1/2 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-sm transition shadow-sm shadow-rose-600/20"
+              >
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== FOOTER LIGERO ===================== */}
+      <footer className="border-t border-slate-200/80 bg-white py-4 px-4 text-center text-xs text-slate-400">
+        <p>Librería & Papelería — Consulta de Precios en Bolivianos (BOB)</p>
+      </footer>
+    </div>
+  );
+}
