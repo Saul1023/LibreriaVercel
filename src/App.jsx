@@ -25,7 +25,9 @@ import {
   Receipt,
   Coins,
   History,
-  Minus
+  Minus,
+  TrendingUp,
+  Wallet
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 
@@ -68,6 +70,7 @@ export default function App() {
   const [formData, setFormData] = useState({
     nombre: '',
     categoria: 'Papelería',
+    precio_costo: '',
     precio: '',
     stock: '0',
     activo: true,
@@ -120,14 +123,14 @@ export default function App() {
         // Modo demostración si aún no han pegado la clave
         console.warn('Supabase ANON KEY no configurada. Usando datos demo de referencia.');
         const mockData = [
-          { id: 1, nombre: 'Cuaderno Espiral 100 Hojas Líder', categoria: 'Cuadernos', precio: 15.50, stock: 25, activo: true, created_at: new Date().toISOString() },
-          { id: 2, nombre: 'Bolígrafo Faber-Castell 070 Azul', categoria: 'Bolígrafos', precio: 3.50, stock: 60, activo: true, created_at: new Date().toISOString() },
-          { id: 3, nombre: 'Resma de Papel Bond Chamex A4 75g', categoria: 'Papelería', precio: 38.00, stock: 12, activo: true, created_at: new Date().toISOString() },
-          { id: 4, nombre: 'Marcador Permanente Sharpie Negro', categoria: 'Marcadores', precio: 8.00, stock: 4, activo: true, created_at: new Date().toISOString() },
-          { id: 5, nombre: 'Pegamento en Barra Pritt 20g', categoria: 'Pegamentos', precio: 12.00, stock: 18, activo: true, created_at: new Date().toISOString() },
-          { id: 6, nombre: 'Juego Geométrico Maped 4 piezas', categoria: 'Reglas y Geometría', precio: 18.00, stock: 0, activo: true, created_at: new Date().toISOString() },
-          { id: 7, nombre: 'Tijera Escolar Punta Roma 13cm', categoria: 'Tijeras y Corte', precio: 6.50, stock: 8, activo: true, created_at: new Date().toISOString() },
-          { id: 8, nombre: 'Bolígrafo Pilot G2 Gel 0.7 Negro', categoria: 'Bolígrafos', precio: 14.00, stock: 0, activo: false, created_at: new Date().toISOString() },
+          { id: 1, nombre: 'Cuaderno Espiral 100 Hojas Líder', categoria: 'Cuadernos', precio_costo: 10.00, precio: 15.50, stock: 25, activo: true, created_at: new Date().toISOString() },
+          { id: 2, nombre: 'Bolígrafo Faber-Castell 070 Azul', categoria: 'Bolígrafos', precio_costo: 2.00, precio: 3.50, stock: 60, activo: true, created_at: new Date().toISOString() },
+          { id: 3, nombre: 'Resma de Papel Bond Chamex A4 75g', categoria: 'Papelería', precio_costo: 29.50, precio: 38.00, stock: 12, activo: true, created_at: new Date().toISOString() },
+          { id: 4, nombre: 'Marcador Permanente Sharpie Negro', categoria: 'Marcadores', precio_costo: 5.00, precio: 8.00, stock: 4, activo: true, created_at: new Date().toISOString() },
+          { id: 5, nombre: 'Pegamento en Barra Pritt 20g', categoria: 'Pegamentos', precio_costo: 8.00, precio: 12.00, stock: 18, activo: true, created_at: new Date().toISOString() },
+          { id: 6, nombre: 'Juego Geométrico Maped 4 piezas', categoria: 'Reglas y Geometría', precio_costo: 12.00, precio: 18.00, stock: 0, activo: true, created_at: new Date().toISOString() },
+          { id: 7, nombre: 'Tijera Escolar Punta Roma 13cm', categoria: 'Tijeras y Corte', precio_costo: 4.00, precio: 6.50, stock: 8, activo: true, created_at: new Date().toISOString() },
+          { id: 8, nombre: 'Bolígrafo Pilot G2 Gel 0.7 Negro', categoria: 'Bolígrafos', precio_costo: 9.50, precio: 14.00, stock: 0, activo: false, created_at: new Date().toISOString() },
         ];
         setProductos(mockData);
         setLoading(false);
@@ -362,6 +365,7 @@ export default function App() {
     setFormData({
       nombre: product.nombre,
       categoria: product.categoria || 'Papelería',
+      precio_costo: product.precio_costo !== undefined && product.precio_costo !== null ? product.precio_costo.toString() : '',
       precio: product.precio.toString(),
       stock: '0',
       activo: true,
@@ -395,7 +399,7 @@ export default function App() {
     showToast(`¡Lista de ${itemsToRestock.length} faltantes copiada! Lista para pegar en WhatsApp`, 'success');
   };
 
-  // --- Cálculos del Carrito y Caja del Día ---
+  // --- Cálculos del Carrito, Caja del Día e Inventario ---
   const cartTotalItems = useMemo(() => {
     return cart.reduce((acc, item) => acc + item.cantidad, 0);
   }, [cart]);
@@ -407,6 +411,34 @@ export default function App() {
   const dailyTotalAmount = useMemo(() => {
     return dailySales.reduce((acc, s) => acc + s.total, 0);
   }, [dailySales]);
+
+  // Costo total de mercadería vendida en el día
+  const dailyTotalCost = useMemo(() => {
+    return dailySales.reduce((acc, s) => {
+      if (s.costoTotal !== undefined) return acc + s.costoTotal;
+      const itemsCost = (s.items || []).reduce((iAcc, it) => iAcc + ((Number(it.precio_costo) || 0) * it.cantidad), 0);
+      return acc + itemsCost;
+    }, 0);
+  }, [dailySales]);
+
+  // Ganancia neta limpia acumulada en el día
+  const dailyTotalProfit = useMemo(() => {
+    return dailyTotalAmount - dailyTotalCost;
+  }, [dailyTotalAmount, dailyTotalCost]);
+
+  // Capital total invertido en inventario (productos activos)
+  const totalInventoryCost = useMemo(() => {
+    return productos
+      .filter(p => p.activo)
+      .reduce((acc, p) => acc + ((Number(p.precio_costo) || 0) * Number(p.stock || 0)), 0);
+  }, [productos]);
+
+  // Venta total potencial proyectada del inventario actual
+  const totalPotentialSales = useMemo(() => {
+    return productos
+      .filter(p => p.activo)
+      .reduce((acc, p) => acc + (Number(p.precio || 0) * Number(p.stock || 0)), 0);
+  }, [productos]);
 
   const changeAmount = useMemo(() => {
     const cash = parseFloat(cashGiven);
@@ -437,7 +469,7 @@ export default function App() {
         showToast(`"${product.nombre}" no tiene existencias disponibles (Stock: 0)`, 'error');
         return;
       }
-      setCart(prev => [...prev, { ...product, cantidad: 1 }]);
+      setCart(prev => [...prev, { ...product, precio_costo: Number(product.precio_costo ?? 0), cantidad: 1 }]);
     }
 
     showToast(`+ "${product.nombre}" a la venta`, 'info');
@@ -497,12 +529,17 @@ export default function App() {
         return { ...p, stock: Math.max(0, Number(p.stock ?? 0) - soldItem.cantidad) };
       }));
 
-      // 3. Registrar venta en historial del día
+      // 3. Registrar venta en historial del día con cálculo de costo y ganancia
+      const saleTotalCost = cart.reduce((acc, item) => acc + ((Number(item.precio_costo) || 0) * item.cantidad), 0);
+      const saleGanancia = cartTotalAmount - saleTotalCost;
+
       const saleRecord = {
         id: Date.now(),
         timestamp: new Date().toISOString(),
         items: [...cart],
         total: cartTotalAmount,
+        costoTotal: saleTotalCost,
+        ganancia: saleGanancia,
         efectivoRecibido: parseFloat(cashGiven) || cartTotalAmount,
         cambio: changeAmount,
       };
@@ -550,6 +587,7 @@ export default function App() {
     setFormData({
       nombre: '',
       categoria: selectedCategory !== 'Todos' ? selectedCategory : 'Papelería',
+      precio_costo: '',
       precio: '',
       stock: '0',
       activo: true,
@@ -564,6 +602,7 @@ export default function App() {
     setFormData({
       nombre: product.nombre,
       categoria: product.categoria || 'Papelería',
+      precio_costo: product.precio_costo !== undefined && product.precio_costo !== null ? product.precio_costo.toString() : '',
       precio: product.precio.toString(),
       stock: (product.stock ?? 0).toString(),
       activo: product.activo ?? true,
@@ -589,7 +628,13 @@ export default function App() {
 
     const parsedPrice = parseFloat(formData.precio);
     if (isNaN(parsedPrice) || parsedPrice < 0) {
-      showToast('Por favor introduce un precio válido en Bolivianos', 'error');
+      showToast('Por favor introduce un precio de venta válido en Bolivianos', 'error');
+      return;
+    }
+
+    const parsedCost = parseFloat(formData.precio_costo) || 0;
+    if (parsedCost < 0) {
+      showToast('El precio de costo no puede ser negativo', 'error');
       return;
     }
 
@@ -603,6 +648,7 @@ export default function App() {
         const payload = {
           nombre: formData.nombre.trim(),
           categoria: finalCategory || 'Papelería',
+          precio_costo: parsedCost,
           precio: parsedPrice,
           stock: finalStock,
           activo: formData.activo,
@@ -626,6 +672,7 @@ export default function App() {
         const newPayload = {
           nombre: formData.nombre.trim(),
           categoria: finalCategory || 'Papelería',
+          precio_costo: parsedCost,
           precio: parsedPrice,
           stock: finalStock,
           activo: formData.activo,
@@ -978,10 +1025,57 @@ export default function App() {
           </div>
           {isManagerMode && (
             <span className="text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200/60 font-medium text-xs">
-              Edición de precios habilitada
+              Edición y costos visibles
             </span>
           )}
         </div>
+
+        {/* ===================== BALANCE FINANCIERO CONFIDENCIAL (MODO ENCARGADO) ===================== */}
+        {isManagerMode && (
+          <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border border-amber-200/90 rounded-2xl p-4 sm:p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4 text-xs sm:text-sm shadow-xs animate-fade-in">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-sm shadow-amber-500/30 shrink-0">
+                <Wallet className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="font-bold text-amber-950 text-sm sm:text-base">
+                    Balance Financiero de Inventario
+                  </h4>
+                  <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full font-black uppercase tracking-wider">
+                    Confidencial
+                  </span>
+                </div>
+                <p className="text-slate-500 text-xs mt-0.5">
+                  Valuación calculada en tiempo real de artículos activos
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 sm:gap-4 pt-2 md:pt-0 border-t md:border-t-0 border-amber-200/60">
+              <div className="bg-white/90 px-3.5 py-2 rounded-xl border border-amber-200/80 shadow-xs">
+                <span className="text-slate-500 text-[11px] font-medium block">Capital Invertido (Costo):</span>
+                <span className="font-black text-slate-900 text-sm sm:text-base">
+                  Bs. {totalInventoryCost.toFixed(2)}
+                </span>
+              </div>
+              <div className="bg-white/90 px-3.5 py-2 rounded-xl border border-amber-200/80 shadow-xs">
+                <span className="text-slate-500 text-[11px] font-medium block">Venta Potencial:</span>
+                <span className="font-black text-slate-900 text-sm sm:text-base">
+                  Bs. {totalPotentialSales.toFixed(2)}
+                </span>
+              </div>
+              <div className="bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-300 shadow-xs">
+                <span className="text-emerald-800 text-[11px] font-bold block flex items-center gap-1">
+                  <TrendingUp className="w-3.5 h-3.5 text-emerald-600" /> Ganancia Proyectada:
+                </span>
+                <span className="font-black text-emerald-800 text-sm sm:text-base">
+                  +Bs. {(totalPotentialSales - totalInventoryCost).toFixed(2)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ===================== LISTADO DE PRODUCTOS ===================== */}
         {loading ? (
@@ -1168,36 +1262,48 @@ export default function App() {
                               </button>
                             </div>
                           ) : (
-                            <div className="flex items-center justify-end gap-2">
-                              <div
-                                onClick={(e) => isManagerMode && startQuickEdit(p, e)}
-                                className={`inline-flex items-baseline gap-1 px-3 py-1.5 rounded-xl font-bold tracking-tight text-base sm:text-lg transition-all ${
-                                  isManagerMode
-                                    ? 'cursor-pointer hover:bg-amber-100/70 bg-amber-50/50 text-amber-950 border border-amber-200/80'
-                                    : 'bg-emerald-50 text-emerald-800 border border-emerald-100'
-                                }`}
-                                title={isManagerMode ? 'Clic para editar precio rápidamente' : ''}
-                              >
-                                <span className="text-xs sm:text-sm font-semibold opacity-80">Bs.</span>
-                                <span>{Number(p.precio).toFixed(2)}</span>
-                                {isManagerMode && (
-                                  <Pencil className="w-3 h-3 text-amber-600 ml-1 opacity-70" />
-                                )}
+                            <div className="flex flex-col items-end gap-1">
+                              <div className="flex items-center justify-end gap-2">
+                                <div
+                                  onClick={(e) => isManagerMode && startQuickEdit(p, e)}
+                                  className={`inline-flex items-baseline gap-1 px-3 py-1.5 rounded-xl font-bold tracking-tight text-base sm:text-lg transition-all ${
+                                    isManagerMode
+                                      ? 'cursor-pointer hover:bg-amber-100/70 bg-amber-50/50 text-amber-950 border border-amber-200/80'
+                                      : 'bg-emerald-50 text-emerald-800 border border-emerald-100'
+                                  }`}
+                                  title={isManagerMode ? 'Clic para editar precio rápidamente' : ''}
+                                >
+                                  <span className="text-xs sm:text-sm font-semibold opacity-80">Bs.</span>
+                                  <span>{Number(p.precio).toFixed(2)}</span>
+                                  {isManagerMode && (
+                                    <Pencil className="w-3 h-3 text-amber-600 ml-1 opacity-70" />
+                                  )}
+                                </div>
+
+                                <button
+                                  onClick={(e) => addToCart(p, e)}
+                                  disabled={stockNum <= 0}
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs active:scale-95 ${
+                                    stockNum > 0
+                                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+                                      : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                                  }`}
+                                  title={stockNum > 0 ? 'Agregar a la venta actual' : 'Sin existencias para vender'}
+                                >
+                                  <ShoppingCart className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">Vender</span>
+                                </button>
                               </div>
 
-                              <button
-                                onClick={(e) => addToCart(p, e)}
-                                disabled={stockNum <= 0}
-                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs active:scale-95 ${
-                                  stockNum > 0
-                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
-                                    : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
-                                }`}
-                                title={stockNum > 0 ? 'Agregar a la venta actual' : 'Sin existencias para vender'}
-                              >
-                                <ShoppingCart className="w-3.5 h-3.5" />
-                                <span className="hidden sm:inline">Vender</span>
-                              </button>
+                              {/* Información confidencial de Costo y Ganancia (Modo Encargado) */}
+                              {isManagerMode && (
+                                <div className="text-[11px] text-slate-500 flex items-center gap-1.5 font-medium">
+                                  <span>Costo: <strong className="text-slate-800 font-bold">Bs. {Number(p.precio_costo || 0).toFixed(2)}</strong></span>
+                                  <span className="text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/80">
+                                    +Bs. {(Number(p.precio) - Number(p.precio_costo || 0)).toFixed(2)} ({Number(p.precio_costo) > 0 ? (((Number(p.precio) - Number(p.precio_costo)) / Number(p.precio_costo)) * 100).toFixed(0) : 100}%)
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           )}
                         </td>
@@ -1408,6 +1514,19 @@ export default function App() {
                       </div>
                     )}
                   </div>
+
+                  {/* Detalle de Costo y Margen confidencial en modo encargado */}
+                  {isManagerMode && (
+                    <div className="mt-3 pt-2.5 border-t border-amber-200/80 -mx-4 -mb-4 sm:-mx-5 sm:-mb-5 px-4 sm:px-5 py-2.5 bg-amber-50/60 rounded-b-2xl flex items-center justify-between text-xs">
+                      <span className="text-slate-600 font-medium">
+                        Costo: <strong className="text-slate-900 font-bold">Bs. {Number(p.precio_costo || 0).toFixed(2)}</strong>
+                      </span>
+                      <span className="text-emerald-700 font-black flex items-center gap-1 bg-emerald-100/70 border border-emerald-300 px-2 py-0.5 rounded-lg text-[11px]">
+                        <TrendingUp className="w-3 h-3 text-emerald-600" />
+                        +Bs. {(Number(p.precio) - Number(p.precio_costo || 0)).toFixed(2)} ganancia
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1620,15 +1739,42 @@ export default function App() {
                 )}
               </div>
 
-              {/* Precio y Stock */}
-              <div className="grid grid-cols-2 gap-3">
-                {/* Precio en Bolivianos */}
+              {/* Precios: Costo y Venta al Público */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Precio de Costo / Compra */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Precio (Bs.) *
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      Precio Costo (Bs.)
+                    </label>
+                    <span className="text-[10px] text-slate-400 font-semibold">Compra</span>
+                  </div>
                   <div className="relative">
                     <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">
+                      Bs.
+                    </div>
+                    <input
+                      type="number"
+                      step="0.10"
+                      min="0"
+                      value={formData.precio_costo}
+                      onChange={(e) => setFormData({ ...formData, precio_costo: e.target.value })}
+                      placeholder="0.00"
+                      className="w-full pl-10 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                    />
+                  </div>
+                </div>
+
+                {/* Precio de Venta al Público */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      Precio Venta (Bs.) *
+                    </label>
+                    <span className="text-[10px] text-emerald-600 font-semibold">Público</span>
+                  </div>
+                  <div className="relative">
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 font-bold text-sm">
                       Bs.
                     </div>
                     <input
@@ -1643,26 +1789,60 @@ export default function App() {
                     />
                   </div>
                 </div>
+              </div>
 
-                {/* Stock en Unidades */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Stock (Unidades)
-                  </label>
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-                      <Package className="w-4 h-4" />
+              {/* Indicador de Margen y Ganancia en vivo */}
+              {(() => {
+                const c = parseFloat(formData.precio_costo) || 0;
+                const v = parseFloat(formData.precio) || 0;
+                if (v > 0) {
+                  const ganancia = v - c;
+                  const margen = c > 0 ? ((ganancia / c) * 100).toFixed(0) : 100;
+                  return (
+                    <div className={`p-2.5 rounded-xl border text-xs flex items-center justify-between ${
+                      ganancia >= 0 
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+                        : 'bg-rose-50 border-rose-200 text-rose-700'
+                    }`}>
+                      <div className="flex items-center gap-1.5">
+                        <TrendingUp className="w-4 h-4 shrink-0 text-emerald-600" />
+                        <span>
+                          {ganancia >= 0 ? (
+                            <>Ganancia estimada: <strong>+Bs. {ganancia.toFixed(2)}</strong> por unidad</>
+                          ) : (
+                            <>Alerta: ¡Precio de venta menor al costo! Pérdida: <strong>-Bs. {Math.abs(ganancia).toFixed(2)}</strong></>
+                          )}
+                        </span>
+                      </div>
+                      {c > 0 && ganancia >= 0 && (
+                        <span className="font-extrabold bg-emerald-200/80 text-emerald-900 px-2 py-0.5 rounded-md text-[11px]">
+                          +{margen}% margen
+                        </span>
+                      )}
                     </div>
-                    <input
-                      type="number"
-                      step="1"
-                      min="0"
-                      value={formData.stock}
-                      onChange={(e) => setFormData({ ...formData, stock: e.target.value })}
-                      placeholder="0"
-                      className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
-                    />
+                  );
+                }
+                return null;
+              })()}
+
+              {/* Stock en Unidades */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Stock Inicial / Actual (Unidades)
+                </label>
+                <div className="relative">
+                  <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                    <Package className="w-4 h-4" />
                   </div>
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={formData.stock}
+                    onChange={(e) => setFormData({ ...formData, stock: e.target.value })}
+                    placeholder="0"
+                    className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                  />
                 </div>
               </div>
 
@@ -1984,7 +2164,7 @@ export default function App() {
       {/* ===================== MODAL DE CAJA Y RESUMEN DEL DÍA ===================== */}
       {dailySalesModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 max-h-[85vh] flex flex-col">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 max-h-[85vh] flex flex-col">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2">
                 <Coins className="w-5 h-5 text-amber-600" />
@@ -1999,17 +2179,36 @@ export default function App() {
             </div>
 
             {/* Métricas del día */}
-            <div className="grid grid-cols-2 gap-3 my-4">
-              <div className="bg-emerald-50 border border-emerald-200/80 p-3.5 rounded-2xl">
-                <div className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider">Total Recaudado</div>
-                <div className="text-2xl font-black text-emerald-900 mt-0.5">
+            <div className={`grid gap-2.5 my-4 ${isManagerMode ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-2'}`}>
+              <div className="bg-slate-50 border border-slate-200 p-3 rounded-2xl">
+                <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">Caja (Total)</div>
+                <div className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">
                   Bs. {dailyTotalAmount.toFixed(2)}
                 </div>
               </div>
-              <div className="bg-indigo-50 border border-indigo-200/80 p-3.5 rounded-2xl">
-                <div className="text-[11px] font-bold text-indigo-800 uppercase tracking-wider">Ventas Realizadas</div>
-                <div className="text-2xl font-black text-indigo-900 mt-0.5">
+
+              {isManagerMode && (
+                <div className="bg-emerald-50 border border-emerald-300 p-3 rounded-2xl shadow-xs">
+                  <div className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider flex items-center gap-1">
+                    <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+                    Ganancia Neta
+                  </div>
+                  <div className="text-xl sm:text-2xl font-black text-emerald-700 mt-0.5">
+                    Bs. {dailyTotalProfit.toFixed(2)}
+                  </div>
+                  <div className="text-[10px] text-emerald-700/80 font-medium mt-0.5">
+                    Costo: Bs. {dailyTotalCost.toFixed(2)}
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-indigo-50 border border-indigo-200/80 p-3 rounded-2xl">
+                <div className="text-[11px] font-bold text-indigo-800 uppercase tracking-wider">Ventas</div>
+                <div className="text-xl sm:text-2xl font-black text-indigo-900 mt-0.5">
                   {dailySales.length}
+                </div>
+                <div className="text-[10px] text-indigo-600 font-medium mt-0.5">
+                  tickets cobrados
                 </div>
               </div>
             </div>
@@ -2021,29 +2220,40 @@ export default function App() {
                   Aún no se han registrado ventas hoy
                 </div>
               ) : (
-                dailySales.map((sale, idx) => (
-                  <div key={sale.id || idx} className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-xs flex justify-between items-center">
-                    <div>
-                      <div className="font-bold text-slate-800">
-                        {sale.items.length} producto{sale.items.length !== 1 ? 's' : ''}
+                dailySales.map((sale, idx) => {
+                  const saleProfit = sale.ganancia !== undefined 
+                    ? sale.ganancia 
+                    : (sale.total - ((sale.items || []).reduce((acc, it) => acc + ((Number(it.precio_costo) || 0) * it.cantidad), 0)));
+
+                  return (
+                    <div key={sale.id || idx} className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-xs flex justify-between items-center">
+                      <div>
+                        <div className="font-bold text-slate-800">
+                          {sale.items.length} producto{sale.items.length !== 1 ? 's' : ''}
+                        </div>
+                        <div className="text-slate-400 text-[11px]">
+                          {new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </div>
                       </div>
-                      <div className="text-slate-400 text-[11px]">
-                        {new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      <div className="text-right">
+                        <div className="font-black text-slate-900 text-sm">
+                          Bs. {sale.total.toFixed(2)}
+                        </div>
+                        {isManagerMode && (
+                          <div className="text-[11px] text-emerald-700 font-bold">
+                            +Bs. {saleProfit.toFixed(2)} ganancia
+                          </div>
+                        )}
+                        <button
+                          onClick={() => shareReceiptWhatsApp(sale)}
+                          className="text-[11px] text-indigo-600 hover:underline font-semibold block mt-0.5"
+                        >
+                          Reenviar recibo
+                        </button>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="font-black text-emerald-700 text-sm">
-                        Bs. {sale.total.toFixed(2)}
-                      </div>
-                      <button
-                        onClick={() => shareReceiptWhatsApp(sale)}
-                        className="text-[11px] text-indigo-600 hover:underline font-semibold"
-                      >
-                        Reenviar recibo
-                      </button>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
 
