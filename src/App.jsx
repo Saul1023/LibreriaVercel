@@ -20,7 +20,12 @@ import {
   Package,
   Copy,
   ClipboardList,
-  AlertTriangle
+  AlertTriangle,
+  ShoppingCart,
+  Receipt,
+  Coins,
+  History,
+  Minus
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 
@@ -75,6 +80,27 @@ export default function App() {
 
   // --- Modal de Confirmación de Eliminación ---
   const [deletingProduct, setDeletingProduct] = useState(null);
+
+  // --- Módulo de Venta y Carrito (POS) ---
+  const [cart, setCart] = useState([]);
+  const [cartOpen, setCartOpen] = useState(false);
+  const [cashGiven, setCashGiven] = useState('');
+  const [isProcessingSale, setIsProcessingSale] = useState(false);
+  const [completedSaleTicket, setCompletedSaleTicket] = useState(null);
+
+  // --- Historial / Caja del Día ---
+  const [dailySales, setDailySales] = useState(() => {
+    try {
+      const stored = localStorage.getItem('libreria_ventas_hoy');
+      if (!stored) return [];
+      const parsed = JSON.parse(stored);
+      const todayStr = new Date().toDateString();
+      return parsed.filter(s => new Date(s.timestamp).toDateString() === todayStr);
+    } catch {
+      return [];
+    }
+  });
+  const [dailySalesModalOpen, setDailySalesModalOpen] = useState(false);
 
   // --- Notificaciones Toast ---
   const [toast, setToast] = useState(null); // { message, type: 'success'|'error'|'info' }
@@ -369,6 +395,153 @@ export default function App() {
     showToast(`¡Lista de ${itemsToRestock.length} faltantes copiada! Lista para pegar en WhatsApp`, 'success');
   };
 
+  // --- Cálculos del Carrito y Caja del Día ---
+  const cartTotalItems = useMemo(() => {
+    return cart.reduce((acc, item) => acc + item.cantidad, 0);
+  }, [cart]);
+
+  const cartTotalAmount = useMemo(() => {
+    return cart.reduce((acc, item) => acc + (item.precio * item.cantidad), 0);
+  }, [cart]);
+
+  const dailyTotalAmount = useMemo(() => {
+    return dailySales.reduce((acc, s) => acc + s.total, 0);
+  }, [dailySales]);
+
+  const changeAmount = useMemo(() => {
+    const cash = parseFloat(cashGiven);
+    if (isNaN(cash) || cash < cartTotalAmount) return 0;
+    return cash - cartTotalAmount;
+  }, [cashGiven, cartTotalAmount]);
+
+  // --- Funciones del Módulo de Ventas (POS) ---
+  const addToCart = (product, e) => {
+    e?.stopPropagation();
+    if (!product.activo) {
+      showToast('Este producto se encuentra inactivo', 'error');
+      return;
+    }
+
+    const currentStock = Number(product.stock ?? 0);
+    const existingIndex = cart.findIndex(item => item.id === product.id);
+
+    if (existingIndex > -1) {
+      const currentQty = cart[existingIndex].cantidad;
+      if (currentQty + 1 > currentStock) {
+        showToast(`Stock insuficiente. Solo quedan ${currentStock} unid. de "${product.nombre}"`, 'error');
+        return;
+      }
+      setCart(prev => prev.map((item, idx) => idx === existingIndex ? { ...item, cantidad: item.cantidad + 1 } : item));
+    } else {
+      if (currentStock <= 0) {
+        showToast(`"${product.nombre}" no tiene existencias disponibles (Stock: 0)`, 'error');
+        return;
+      }
+      setCart(prev => [...prev, { ...product, cantidad: 1 }]);
+    }
+
+    showToast(`+ "${product.nombre}" a la venta`, 'info');
+  };
+
+  const updateCartQuantity = (productId, delta) => {
+    setCart(prev => {
+      return prev.map(item => {
+        if (item.id === productId) {
+          const newQty = item.cantidad + delta;
+          const currentStock = Number(item.stock ?? 0);
+          if (newQty > currentStock) {
+            showToast(`Stock máximo disponible: ${currentStock} unid.`, 'error');
+            return item;
+          }
+          return newQty > 0 ? { ...item, cantidad: newQty } : null;
+        }
+        return item;
+      }).filter(Boolean);
+    });
+  };
+
+  const removeFromCart = (productId) => {
+    setCart(prev => prev.filter(item => item.id !== productId));
+  };
+
+  const clearCart = () => {
+    setCart([]);
+    setCashGiven('');
+  };
+
+  const completeSale = async () => {
+    if (cart.length === 0) return;
+    setIsProcessingSale(true);
+
+    try {
+      // 1. Descontar en Supabase
+      if (isSupabaseConfigured) {
+        for (const item of cart) {
+          const productInDb = productos.find(p => p.id === item.id);
+          const currentStock = Number(productInDb?.stock ?? item.stock ?? 0);
+          const newStock = Math.max(0, currentStock - item.cantidad);
+
+          const { error } = await supabase
+            .from('productos')
+            .update({ stock: newStock })
+            .eq('id', item.id);
+
+          if (error) throw error;
+        }
+      }
+
+      // 2. Descontar en estado local
+      setProductos(prev => prev.map(p => {
+        const soldItem = cart.find(item => item.id === p.id);
+        if (!soldItem) return p;
+        return { ...p, stock: Math.max(0, Number(p.stock ?? 0) - soldItem.cantidad) };
+      }));
+
+      // 3. Registrar venta en historial del día
+      const saleRecord = {
+        id: Date.now(),
+        timestamp: new Date().toISOString(),
+        items: [...cart],
+        total: cartTotalAmount,
+        efectivoRecibido: parseFloat(cashGiven) || cartTotalAmount,
+        cambio: changeAmount,
+      };
+
+      const updatedSales = [saleRecord, ...dailySales];
+      setDailySales(updatedSales);
+      localStorage.setItem('libreria_ventas_hoy', JSON.stringify(updatedSales));
+
+      setCompletedSaleTicket(saleRecord);
+      setCartOpen(false);
+      clearCart();
+      showToast(`¡Venta completada por Bs. ${cartTotalAmount.toFixed(2)}! Stock actualizado`, 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Error al procesar la venta: ' + err.message, 'error');
+    } finally {
+      setIsProcessingSale(false);
+    }
+  };
+
+  const shareReceiptWhatsApp = (ticket) => {
+    if (!ticket) return;
+    const lines = [
+      '🧾 *COMPROBANTE DE COMPRA*',
+      '📚 *Librería & Papelería*',
+      `📅 Fecha: ${new Date(ticket.timestamp).toLocaleString('es-BO')}`,
+      '----------------------------------------',
+      ...ticket.items.map(it => `• ${it.cantidad}x ${it.nombre} - Bs. ${(it.precio * it.cantidad).toFixed(2)}`),
+      '----------------------------------------',
+      `*TOTAL: Bs. ${ticket.total.toFixed(2)}*`,
+      `Efectivo: Bs. ${ticket.efectivoRecibido.toFixed(2)}`,
+      `Cambio: Bs. ${ticket.cambio.toFixed(2)}`,
+      '----------------------------------------',
+      '¡Gracias por su preferencia! ✨'
+    ];
+    const text = encodeURIComponent(lines.join('\n'));
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  };
+
   // --- Crear / Editar Producto Modal ---
   const openCreateModal = () => {
     setEditingProduct(null);
@@ -581,6 +754,36 @@ export default function App() {
 
           {/* Acciones de Encabezado */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {/* Botón Caja del Día */}
+            <button
+              onClick={() => setDailySalesModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 sm:py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs sm:text-sm font-semibold transition-all active:scale-95 border border-slate-200/80"
+              title="Ver caja y ventas de hoy"
+            >
+              <Coins className="w-4 h-4 text-amber-600" />
+              <span className="hidden lg:inline text-slate-600 font-medium">Caja:</span>
+              <span className="font-extrabold text-emerald-700">Bs. {dailyTotalAmount.toFixed(2)}</span>
+            </button>
+
+            {/* Botón Carrito / Venta Actual */}
+            <button
+              onClick={() => setCartOpen(true)}
+              className={`relative inline-flex items-center gap-1.5 px-3 sm:px-3.5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all active:scale-95 ${
+                cartTotalItems > 0
+                  ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/50'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200/80'
+              }`}
+              title="Abrir venta actual para cobrar"
+            >
+              <ShoppingCart className="w-4 h-4" />
+              <span className="hidden sm:inline">Venta</span>
+              {cartTotalItems > 0 && (
+                <span className="px-1.5 py-0.5 bg-white text-indigo-700 rounded-full text-xs font-black shadow-xs">
+                  {cartTotalItems}
+                </span>
+              )}
+            </button>
+
             {isManagerMode ? (
               <>
                 <button
@@ -965,20 +1168,36 @@ export default function App() {
                               </button>
                             </div>
                           ) : (
-                            <div
-                              onClick={(e) => isManagerMode && startQuickEdit(p, e)}
-                              className={`inline-flex items-baseline gap-1 px-3 py-1.5 rounded-xl font-bold tracking-tight text-base sm:text-lg transition-all ${
-                                isManagerMode
-                                  ? 'cursor-pointer hover:bg-amber-100/70 bg-amber-50/50 text-amber-950 border border-amber-200/80'
-                                  : 'bg-emerald-50 text-emerald-800 border border-emerald-100'
-                              }`}
-                              title={isManagerMode ? 'Clic para editar precio rápidamente' : ''}
-                            >
-                              <span className="text-xs sm:text-sm font-semibold opacity-80">Bs.</span>
-                              <span>{Number(p.precio).toFixed(2)}</span>
-                              {isManagerMode && (
-                                <Pencil className="w-3 h-3 text-amber-600 ml-1 opacity-70" />
-                              )}
+                            <div className="flex items-center justify-end gap-2">
+                              <div
+                                onClick={(e) => isManagerMode && startQuickEdit(p, e)}
+                                className={`inline-flex items-baseline gap-1 px-3 py-1.5 rounded-xl font-bold tracking-tight text-base sm:text-lg transition-all ${
+                                  isManagerMode
+                                    ? 'cursor-pointer hover:bg-amber-100/70 bg-amber-50/50 text-amber-950 border border-amber-200/80'
+                                    : 'bg-emerald-50 text-emerald-800 border border-emerald-100'
+                                }`}
+                                title={isManagerMode ? 'Clic para editar precio rápidamente' : ''}
+                              >
+                                <span className="text-xs sm:text-sm font-semibold opacity-80">Bs.</span>
+                                <span>{Number(p.precio).toFixed(2)}</span>
+                                {isManagerMode && (
+                                  <Pencil className="w-3 h-3 text-amber-600 ml-1 opacity-70" />
+                                )}
+                              </div>
+
+                              <button
+                                onClick={(e) => addToCart(p, e)}
+                                disabled={stockNum <= 0}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs active:scale-95 ${
+                                  stockNum > 0
+                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+                                    : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                                }`}
+                                title={stockNum > 0 ? 'Agregar a la venta actual' : 'Sin existencias para vender'}
+                              >
+                                <ShoppingCart className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Vender</span>
+                              </button>
                             </div>
                           )}
                         </td>
@@ -1125,17 +1344,33 @@ export default function App() {
                           </button>
                         </div>
                       ) : (
-                        <div
-                          onClick={(e) => isManagerMode && startQuickEdit(p, e)}
-                          className={`text-xl font-extrabold flex items-baseline gap-1 mt-0.5 ${
-                            isManagerMode
-                              ? 'text-amber-950 cursor-pointer hover:underline'
-                              : 'text-emerald-700'
-                          }`}
-                        >
-                          <span className="text-xs font-semibold">Bs.</span>
-                          <span>{Number(p.precio).toFixed(2)}</span>
-                          {isManagerMode && <Pencil className="w-3 h-3 text-amber-600 ml-1" />}
+                        <div className="flex flex-col gap-1.5">
+                          <div
+                            onClick={(e) => isManagerMode && startQuickEdit(p, e)}
+                            className={`text-xl font-extrabold flex items-baseline gap-1 mt-0.5 ${
+                              isManagerMode
+                                ? 'text-amber-950 cursor-pointer hover:underline'
+                                : 'text-emerald-700'
+                            }`}
+                          >
+                            <span className="text-xs font-semibold">Bs.</span>
+                            <span>{Number(p.precio).toFixed(2)}</span>
+                            {isManagerMode && <Pencil className="w-3 h-3 text-amber-600 ml-1" />}
+                          </div>
+
+                          <button
+                            onClick={(e) => addToCart(p, e)}
+                            disabled={stockNum <= 0}
+                            className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs active:scale-95 ${
+                              stockNum > 0
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+                                : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                            }`}
+                            title={stockNum > 0 ? 'Agregar a la venta actual' : 'Agotado'}
+                          >
+                            <ShoppingCart className="w-3.5 h-3.5" />
+                            <span>Vender</span>
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1492,6 +1727,332 @@ export default function App() {
                 className="w-1/2 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-sm transition shadow-sm shadow-rose-600/20"
               >
                 Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== BARRA FLOTANTE MÓVIL DE VENTA ===================== */}
+      {cartTotalItems > 0 && (
+        <div className="fixed bottom-4 left-4 right-4 z-40 sm:hidden animate-bounce">
+          <button
+            onClick={() => setCartOpen(true)}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white p-3.5 rounded-2xl shadow-xl shadow-indigo-600/40 flex items-center justify-between font-bold text-sm active:scale-98 transition-all"
+          >
+            <div className="flex items-center gap-2">
+              <ShoppingCart className="w-5 h-5" />
+              <span>Venta ({cartTotalItems} {cartTotalItems === 1 ? 'ítem' : 'ítems'})</span>
+            </div>
+            <div className="text-base font-black flex items-center gap-1">
+              <span>Bs. {cartTotalAmount.toFixed(2)}</span>
+              <span>→</span>
+            </div>
+          </button>
+        </div>
+      )}
+
+      {/* ===================== MODAL DE VENTA ACTUAL Y COBRO ===================== */}
+      {cartOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-lg w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-100 overflow-hidden">
+            {/* Header del carrito */}
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold">
+                  <ShoppingCart className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-base">Cobro de Venta</h3>
+                  <p className="text-xs text-slate-500">{cartTotalItems} producto{cartTotalItems !== 1 ? 's' : ''} en la cuenta</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setCartOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Lista de productos en la venta */}
+            <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-3">
+              {cart.length === 0 ? (
+                <div className="text-center py-10 text-slate-400">
+                  <ShoppingCart className="w-12 h-12 mx-auto mb-2 opacity-30" />
+                  <p className="text-sm font-medium">No hay productos en la venta actual</p>
+                  <p className="text-xs text-slate-400 mt-1">Usa el botón "Vender" en cualquier producto del catálogo</p>
+                </div>
+              ) : (
+                cart.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 border border-slate-200/80">
+                    <div className="min-w-0 flex-1">
+                      <h4 className="font-bold text-slate-800 text-sm truncate">{item.nombre}</h4>
+                      <p className="text-xs text-slate-500">Bs. {Number(item.precio).toFixed(2)} c/u</p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {/* Controles de cantidad */}
+                      <div className="flex items-center bg-white rounded-xl border border-slate-300 shadow-xs">
+                        <button
+                          onClick={() => updateCartQuantity(item.id, -1)}
+                          className="w-7 h-7 flex items-center justify-center text-slate-600 hover:bg-slate-100 rounded-l-xl font-bold"
+                          title="Restar"
+                        >
+                          -
+                        </button>
+                        <span className="w-7 text-center font-bold text-xs text-slate-800">{item.cantidad}</span>
+                        <button
+                          onClick={() => updateCartQuantity(item.id, 1)}
+                          className="w-7 h-7 flex items-center justify-center text-slate-600 hover:bg-slate-100 rounded-r-xl font-bold"
+                          title="Sumar"
+                        >
+                          +
+                        </button>
+                      </div>
+
+                      {/* Subtotal */}
+                      <div className="w-20 text-right font-extrabold text-slate-900 text-sm">
+                        Bs. {(item.precio * item.cantidad).toFixed(2)}
+                      </div>
+
+                      {/* Eliminar */}
+                      <button
+                        onClick={() => removeFromCart(item.id)}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg"
+                        title="Quitar"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Sección de Total y Calculadora de Cambio */}
+            {cart.length > 0 && (
+              <div className="p-4 sm:p-5 border-t border-slate-200 bg-slate-50/80 space-y-3.5">
+                {/* Total */}
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm font-bold text-slate-600 uppercase tracking-wider">Total a Pagar</span>
+                  <div className="text-2xl sm:text-3xl font-black text-slate-900">
+                    <span className="text-base font-semibold mr-1 text-slate-500">Bs.</span>
+                    {cartTotalAmount.toFixed(2)}
+                  </div>
+                </div>
+
+                {/* Calculadora de Vuelto */}
+                <div className="space-y-2 bg-white p-3 rounded-2xl border border-slate-200">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-slate-700">Paga con (Efectivo):</label>
+                    <div className="relative w-32">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">Bs.</span>
+                      <input
+                        type="number"
+                        step="0.50"
+                        min="0"
+                        value={cashGiven}
+                        onChange={(e) => setCashGiven(e.target.value)}
+                        placeholder={cartTotalAmount.toFixed(2)}
+                        className="w-full pl-8 pr-2 py-1.5 text-right font-bold text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Atajos de billetes bolivianos */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[11px] text-slate-400 mr-0.5">Billetes:</span>
+                    <button
+                      type="button"
+                      onClick={() => setCashGiven(cartTotalAmount.toString())}
+                      className="px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-[11px] font-bold text-slate-700"
+                    >
+                      Exacto
+                    </button>
+                    {[10, 20, 50, 100, 200].map((b) => (
+                      <button
+                        key={b}
+                        type="button"
+                        onClick={() => setCashGiven(b.toString())}
+                        className="px-2 py-0.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-[11px] font-bold text-indigo-700"
+                      >
+                        Bs. {b}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Resultado del Cambio */}
+                  {cashGiven !== '' && (
+                    <div className={`mt-2 p-2 rounded-xl text-xs font-bold flex items-center justify-between ${
+                      parseFloat(cashGiven) >= cartTotalAmount
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                        : 'bg-rose-50 text-rose-700 border border-rose-200'
+                    }`}>
+                      <span>
+                        {parseFloat(cashGiven) >= cartTotalAmount ? 'Cambio / Vuelto a dar:' : 'Falta dinero:'}
+                      </span>
+                      <span className="text-sm font-black">
+                        Bs. {parseFloat(cashGiven) >= cartTotalAmount 
+                          ? changeAmount.toFixed(2) 
+                          : (cartTotalAmount - parseFloat(cashGiven)).toFixed(2)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Botones de acción */}
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={clearCart}
+                    className="w-1/3 py-2.5 rounded-xl border border-slate-300 text-slate-600 font-bold text-xs sm:text-sm hover:bg-slate-100 transition"
+                  >
+                    Vaciar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isProcessingSale}
+                    onClick={completeSale}
+                    className="w-2/3 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs sm:text-sm shadow-md shadow-emerald-600/30 transition active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>{isProcessingSale ? 'Cobrando...' : 'Confirmar Venta y Cobrar'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ===================== MODAL DE COMPROBANTE / TICKET ===================== */}
+      {completedSaleTicket && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 text-center shadow-2xl border border-slate-100">
+            <div className="w-14 h-14 bg-emerald-100 text-emerald-700 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-sm shadow-emerald-600/10">
+              <Check className="w-7 h-7" />
+            </div>
+            <h3 className="text-xl font-extrabold text-slate-900">¡Venta Completada!</h3>
+            <p className="text-xs text-slate-500 mt-0.5 mb-4">Stock descontado automáticamente</p>
+
+            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 text-left text-xs space-y-2 mb-4 font-mono">
+              <div className="text-slate-400 text-[11px] border-b pb-1">
+                {new Date(completedSaleTicket.timestamp).toLocaleString('es-BO')}
+              </div>
+              <div className="space-y-1 max-h-36 overflow-y-auto">
+                {completedSaleTicket.items.map((it, i) => (
+                  <div key={i} className="flex justify-between">
+                    <span className="truncate pr-2">{it.cantidad}x {it.nombre}</span>
+                    <span className="font-bold shrink-0">Bs. {(it.precio * it.cantidad).toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="border-t pt-2 flex justify-between text-sm font-black text-slate-900 font-sans">
+                <span>TOTAL:</span>
+                <span>Bs. {completedSaleTicket.total.toFixed(2)}</span>
+              </div>
+              {completedSaleTicket.cambio > 0 && (
+                <div className="flex justify-between text-emerald-700 font-sans font-bold">
+                  <span>Cambio devuelto:</span>
+                  <span>Bs. {completedSaleTicket.cambio.toFixed(2)}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => shareReceiptWhatsApp(completedSaleTicket)}
+                className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm flex items-center justify-center gap-1.5 shadow-sm transition active:scale-95"
+              >
+                <Receipt className="w-4 h-4" />
+                <span>Enviar Recibo por WhatsApp</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCompletedSaleTicket(null)}
+                className="w-full py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-sm transition"
+              >
+                Nueva Venta
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== MODAL DE CAJA Y RESUMEN DEL DÍA ===================== */}
+      {dailySalesModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Coins className="w-5 h-5 text-amber-600" />
+                <h3 className="font-bold text-slate-900 text-lg">Caja y Ventas de Hoy</h3>
+              </div>
+              <button
+                onClick={() => setDailySalesModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Métricas del día */}
+            <div className="grid grid-cols-2 gap-3 my-4">
+              <div className="bg-emerald-50 border border-emerald-200/80 p-3.5 rounded-2xl">
+                <div className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider">Total Recaudado</div>
+                <div className="text-2xl font-black text-emerald-900 mt-0.5">
+                  Bs. {dailyTotalAmount.toFixed(2)}
+                </div>
+              </div>
+              <div className="bg-indigo-50 border border-indigo-200/80 p-3.5 rounded-2xl">
+                <div className="text-[11px] font-bold text-indigo-800 uppercase tracking-wider">Ventas Realizadas</div>
+                <div className="text-2xl font-black text-indigo-900 mt-0.5">
+                  {dailySales.length}
+                </div>
+              </div>
+            </div>
+
+            {/* Listado de ventas */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {dailySales.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-sm">
+                  Aún no se han registrado ventas hoy
+                </div>
+              ) : (
+                dailySales.map((sale, idx) => (
+                  <div key={sale.id || idx} className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-xs flex justify-between items-center">
+                    <div>
+                      <div className="font-bold text-slate-800">
+                        {sale.items.length} producto{sale.items.length !== 1 ? 's' : ''}
+                      </div>
+                      <div className="text-slate-400 text-[11px]">
+                        {new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-black text-emerald-700 text-sm">
+                        Bs. {sale.total.toFixed(2)}
+                      </div>
+                      <button
+                        onClick={() => shareReceiptWhatsApp(sale)}
+                        className="text-[11px] text-indigo-600 hover:underline font-semibold"
+                      >
+                        Reenviar recibo
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex justify-end">
+              <button
+                onClick={() => setDailySalesModalOpen(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-sm"
+              >
+                Cerrar
               </button>
             </div>
           </div>
