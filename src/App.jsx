@@ -17,7 +17,10 @@ import {
   Eye,
   EyeOff,
   Sparkles,
-  Package
+  Package,
+  Copy,
+  ClipboardList,
+  AlertTriangle
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 
@@ -45,6 +48,7 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('Todos');
   const [viewMode, setViewMode] = useState('table'); // 'table' | 'grid'
+  const [onlyLowStock, setOnlyLowStock] = useState(false); // Filtro "Por Reponer / Faltantes"
 
   // --- Modo Encargado y PIN ---
   const [isManagerMode, setIsManagerMode] = useState(false);
@@ -142,6 +146,11 @@ export default function App() {
       .replace(/[\u0300-\u036f]/g, '')
       .trim();
 
+  // Conteo de productos con stock bajo (crítico)
+  const lowStockCount = useMemo(() => {
+    return productos.filter(p => p.activo && Number(p.stock ?? 0) <= 5).length;
+  }, [productos]);
+
   // --- Filtrado en tiempo real multi-palabra ---
   const filteredProducts = useMemo(() => {
     const normalizedTerm = normalizeText(searchTerm);
@@ -150,6 +159,11 @@ export default function App() {
     return productos.filter(p => {
       // Si no es encargado, solo mostramos productos activos
       if (!isManagerMode && !p.activo) {
+        return false;
+      }
+
+      // Si está activo el filtro de bajo stock / por reponer
+      if (onlyLowStock && Number(p.stock ?? 0) > 5) {
         return false;
       }
 
@@ -162,7 +176,7 @@ export default function App() {
       const searchableString = normalizeText(`${p.nombre} ${p.categoria || ''}`);
       return searchTokens.every(token => searchableString.includes(token));
     });
-  }, [productos, searchTerm, selectedCategory, isManagerMode]);
+  }, [productos, searchTerm, selectedCategory, isManagerMode, onlyLowStock]);
 
   // --- Control de PIN para Modo Encargado ---
   const handleOpenPinModal = () => {
@@ -311,6 +325,48 @@ export default function App() {
       console.error(err);
       showToast('Error al actualizar stock: ' + err.message, 'error');
     }
+  };
+
+  // --- Duplicar Producto para Crear Otra Variante (Color / Tamaño / Cuadrícula) ---
+  const duplicateProduct = (product, e) => {
+    e?.stopPropagation();
+    setEditingProduct(null); // Producto nuevo
+    setIsCustomCategory(false);
+    setCustomCategoryName('');
+    setFormData({
+      nombre: product.nombre,
+      categoria: product.categoria || 'Papelería',
+      precio: product.precio.toString(),
+      stock: '0',
+      activo: true,
+    });
+    setProductModalOpen(true);
+    showToast(`Creando variante basada en "${product.nombre}". Ajusta el color/tamaño/cuadrícula y el stock.`, 'info');
+  };
+
+  // --- Copiar Pedido de Faltantes para WhatsApp / Portapapeles ---
+  const copyOrderList = () => {
+    const itemsToRestock = productos.filter(p => p.activo && Number(p.stock ?? 0) <= 5);
+    if (itemsToRestock.length === 0) {
+      showToast('¡No hay productos con stock bajo en este momento!', 'info');
+      return;
+    }
+
+    const lines = [
+      '📦 *LISTA DE PEDIDO / FALTANTES - LIBRERÍA*',
+      `📅 Fecha: ${new Date().toLocaleDateString('es-BO')}`,
+      '----------------------------------------',
+      ...itemsToRestock.map(p => {
+        const stockActual = Number(p.stock ?? 0);
+        const alerta = stockActual === 0 ? '🔴 AGOTADO (0 unid.)' : `⚠️ Quedan solo: ${stockActual} unid.`;
+        return `• *${p.nombre}* [${p.categoria}]\n   ${alerta}`;
+      }),
+      '----------------------------------------',
+      `Total ítems a reponer: ${itemsToRestock.length}`
+    ];
+
+    navigator.clipboard.writeText(lines.join('\n'));
+    showToast(`¡Lista de ${itemsToRestock.length} faltantes copiada! Lista para pegar en WhatsApp`, 'success');
   };
 
   // --- Crear / Editar Producto Modal ---
@@ -661,6 +717,49 @@ export default function App() {
               );
             })}
           </div>
+
+          {/* Fila de Control de Stock y Pedido Rápido */}
+          <div className="pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setOnlyLowStock(!onlyLowStock)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold transition-all ${
+                  onlyLowStock
+                    ? 'bg-amber-600 text-white shadow-sm shadow-amber-600/30 ring-2 ring-amber-400'
+                    : lowStockCount > 0
+                    ? 'bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100'
+                    : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                }`}
+                disabled={lowStockCount === 0}
+                title={lowStockCount > 0 ? 'Filtrar artículos que se están agotando' : 'No hay productos con stock bajo'}
+              >
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>
+                  {onlyLowStock ? 'Viendo solo faltantes' : `Faltantes por reponer (${lowStockCount})`}
+                </span>
+              </button>
+
+              {onlyLowStock && (
+                <button
+                  onClick={() => setOnlyLowStock(false)}
+                  className="text-xs text-indigo-600 hover:text-indigo-800 underline font-semibold"
+                >
+                  Mostrar todos
+                </button>
+              )}
+            </div>
+
+            {lowStockCount > 0 && (
+              <button
+                onClick={copyOrderList}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl font-bold transition-all shadow-xs active:scale-95"
+                title="Copiar lista de faltantes formateada para WhatsApp"
+              >
+                <ClipboardList className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Copiar Pedido Proveedor ({lowStockCount})</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Resumen de Resultados */}
@@ -896,6 +995,13 @@ export default function App() {
                                 <Pencil className="w-4 h-4" />
                               </button>
                               <button
+                                onClick={(e) => duplicateProduct(p, e)}
+                                className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
+                                title="Duplicar para crear otra variante (color, tamaño, cuadrícula)"
+                              >
+                                <Copy className="w-4 h-4" />
+                              </button>
+                              <button
                                 onClick={() => toggleProductActive(p)}
                                 className={`p-1.5 rounded-lg transition ${
                                   p.activo
@@ -1044,6 +1150,13 @@ export default function App() {
                           <Pencil className="w-4 h-4" />
                         </button>
                         <button
+                          onClick={(e) => duplicateProduct(p, e)}
+                          className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
+                          title="Duplicar para otra variante"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+                        <button
                           onClick={() => toggleProductActive(p)}
                           className="p-2 text-slate-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition"
                           title={p.activo ? 'Desactivar' : 'Activar'}
@@ -1172,16 +1285,56 @@ export default function App() {
               {/* Nombre */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Nombre del Producto *
+                  Nombre del Producto y Variante *
                 </label>
                 <input
                   type="text"
                   required
                   value={formData.nombre}
                   onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
-                  placeholder="Ej: Cuaderno Espiral 100 Hojas"
+                  placeholder="Ej: Hojas de Carpeta Líder 100h - Cuadrícula Normal"
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
                 />
+
+                {/* Chips rápidos de variantes */}
+                <div className="mt-2">
+                  <span className="text-[11px] font-semibold text-slate-400 block mb-1">
+                    Variantes rápidas (toca para añadir al nombre):
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {[
+                      'Cuadrícula Normal',
+                      'Cuadrícula Menuda',
+                      'Cuadrícula Intermedia',
+                      'Rayado',
+                      'Azul',
+                      'Negro',
+                      'Rojo',
+                      'Verde',
+                      'Carta',
+                      'Oficio'
+                    ].map((variant) => (
+                      <button
+                        key={variant}
+                        type="button"
+                        onClick={() => {
+                          setFormData(prev => {
+                            const current = prev.nombre.trim();
+                            if (!current) return { ...prev, nombre: variant };
+                            if (current.includes(' - ')) {
+                              const base = current.split(' - ')[0];
+                              return { ...prev, nombre: `${base} - ${variant}` };
+                            }
+                            return { ...prev, nombre: `${current} - ${variant}` };
+                          });
+                        }}
+                        className="px-2 py-0.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-300 text-slate-600 rounded-md border border-slate-200 text-xs transition active:scale-95"
+                      >
+                        +{variant}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               {/* Categoría */}
