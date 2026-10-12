@@ -16,7 +16,8 @@ import {
   DollarSign,
   Eye,
   EyeOff,
-  Sparkles
+  Sparkles,
+  Package
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 
@@ -59,6 +60,7 @@ export default function App() {
     nombre: '',
     categoria: 'Papelería',
     precio: '',
+    stock: '0',
     activo: true,
   });
   const [submittingProduct, setSubmittingProduct] = useState(false);
@@ -88,14 +90,14 @@ export default function App() {
         // Modo demostración si aún no han pegado la clave
         console.warn('Supabase ANON KEY no configurada. Usando datos demo de referencia.');
         const mockData = [
-          { id: 1, nombre: 'Cuaderno Espiral 100 Hojas Líder', categoria: 'Cuadernos', precio: 15.50, activo: true, created_at: new Date().toISOString() },
-          { id: 2, nombre: 'Bolígrafo Faber-Castell 070 Azul', categoria: 'Bolígrafos', precio: 3.50, activo: true, created_at: new Date().toISOString() },
-          { id: 3, nombre: 'Resma de Papel Bond Chamex A4 75g', categoria: 'Papelería', precio: 38.00, activo: true, created_at: new Date().toISOString() },
-          { id: 4, nombre: 'Marcador Permanente Sharpie Negro', categoria: 'Marcadores', precio: 8.00, activo: true, created_at: new Date().toISOString() },
-          { id: 5, nombre: 'Pegamento en Barra Pritt 20g', categoria: 'Pegamentos', precio: 12.00, activo: true, created_at: new Date().toISOString() },
-          { id: 6, nombre: 'Juego Geométrico Maped 4 piezas', categoria: 'Reglas y Geometría', precio: 18.00, activo: true, created_at: new Date().toISOString() },
-          { id: 7, nombre: 'Tijera Escolar Punta Roma 13cm', categoria: 'Tijeras y Corte', precio: 6.50, activo: true, created_at: new Date().toISOString() },
-          { id: 8, nombre: 'Bolígrafo Pilot G2 Gel 0.7 Negro', categoria: 'Bolígrafos', precio: 14.00, activo: false, created_at: new Date().toISOString() },
+          { id: 1, nombre: 'Cuaderno Espiral 100 Hojas Líder', categoria: 'Cuadernos', precio: 15.50, stock: 25, activo: true, created_at: new Date().toISOString() },
+          { id: 2, nombre: 'Bolígrafo Faber-Castell 070 Azul', categoria: 'Bolígrafos', precio: 3.50, stock: 60, activo: true, created_at: new Date().toISOString() },
+          { id: 3, nombre: 'Resma de Papel Bond Chamex A4 75g', categoria: 'Papelería', precio: 38.00, stock: 12, activo: true, created_at: new Date().toISOString() },
+          { id: 4, nombre: 'Marcador Permanente Sharpie Negro', categoria: 'Marcadores', precio: 8.00, stock: 4, activo: true, created_at: new Date().toISOString() },
+          { id: 5, nombre: 'Pegamento en Barra Pritt 20g', categoria: 'Pegamentos', precio: 12.00, stock: 18, activo: true, created_at: new Date().toISOString() },
+          { id: 6, nombre: 'Juego Geométrico Maped 4 piezas', categoria: 'Reglas y Geometría', precio: 18.00, stock: 0, activo: true, created_at: new Date().toISOString() },
+          { id: 7, nombre: 'Tijera Escolar Punta Roma 13cm', categoria: 'Tijeras y Corte', precio: 6.50, stock: 8, activo: true, created_at: new Date().toISOString() },
+          { id: 8, nombre: 'Bolígrafo Pilot G2 Gel 0.7 Negro', categoria: 'Bolígrafos', precio: 14.00, stock: 0, activo: false, created_at: new Date().toISOString() },
         ];
         setProductos(mockData);
         setLoading(false);
@@ -285,6 +287,32 @@ export default function App() {
     }
   };
 
+  // --- Ajustar Stock Rápido (+1 / -1) ---
+  const adjustStock = async (product, delta, e) => {
+    e?.stopPropagation();
+    const currentStock = Number(product.stock ?? 0);
+    const newStock = Math.max(0, currentStock + delta);
+
+    try {
+      if (isSupabaseConfigured) {
+        const { error } = await supabase
+          .from('productos')
+          .update({ stock: newStock })
+          .eq('id', product.id);
+
+        if (error) throw error;
+      }
+
+      setProductos(prev =>
+        prev.map(p => (p.id === product.id ? { ...p, stock: newStock } : p))
+      );
+      showToast(`Stock de "${product.nombre}": ${newStock} unid.`, 'info');
+    } catch (err) {
+      console.error(err);
+      showToast('Error al actualizar stock: ' + err.message, 'error');
+    }
+  };
+
   // --- Crear / Editar Producto Modal ---
   const openCreateModal = () => {
     setEditingProduct(null);
@@ -294,6 +322,7 @@ export default function App() {
       nombre: '',
       categoria: selectedCategory !== 'Todos' ? selectedCategory : 'Papelería',
       precio: '',
+      stock: '0',
       activo: true,
     });
     setProductModalOpen(true);
@@ -307,6 +336,7 @@ export default function App() {
       nombre: product.nombre,
       categoria: product.categoria || 'Papelería',
       precio: product.precio.toString(),
+      stock: (product.stock ?? 0).toString(),
       activo: product.activo ?? true,
     });
     setProductModalOpen(true);
@@ -334,6 +364,9 @@ export default function App() {
       return;
     }
 
+    const parsedStock = parseInt(formData.stock, 10);
+    const finalStock = isNaN(parsedStock) || parsedStock < 0 ? 0 : parsedStock;
+
     setSubmittingProduct(true);
     try {
       if (editingProduct) {
@@ -342,6 +375,7 @@ export default function App() {
           nombre: formData.nombre.trim(),
           categoria: finalCategory || 'Papelería',
           precio: parsedPrice,
+          stock: finalStock,
           activo: formData.activo,
         };
 
@@ -364,6 +398,7 @@ export default function App() {
           nombre: formData.nombre.trim(),
           categoria: finalCategory || 'Papelería',
           precio: parsedPrice,
+          stock: finalStock,
           activo: formData.activo,
         };
 
@@ -703,6 +738,7 @@ export default function App() {
                   <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 text-xs uppercase font-bold tracking-wider">
                     <th className="py-3.5 px-4 sm:px-6">Producto</th>
                     <th className="py-3.5 px-4 hidden sm:table-cell">Categoría</th>
+                    <th className="py-3.5 px-4 text-center">Stock</th>
                     <th className="py-3.5 px-4 text-right">Precio (Bolivianos)</th>
                     {isManagerMode && (
                       <th className="py-3.5 px-4 text-center w-36">Gestión</th>
@@ -712,6 +748,7 @@ export default function App() {
                 <tbody className="divide-y divide-slate-100 text-sm">
                   {filteredProducts.map((p) => {
                     const isQuickEditing = quickEditingId === p.id;
+                    const stockNum = Number(p.stock ?? 0);
                     return (
                       <tr
                         key={p.id}
@@ -724,9 +761,18 @@ export default function App() {
                           <div className="font-semibold text-slate-900 text-sm sm:text-base leading-snug">
                             {p.nombre}
                           </div>
-                          <div className="sm:hidden mt-0.5 flex items-center gap-1.5">
+                          <div className="sm:hidden mt-1 flex flex-wrap items-center gap-1.5">
                             <span className="inline-block bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-[11px] font-medium">
                               {p.categoria || 'Sin categoría'}
+                            </span>
+                            <span className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold ${
+                              stockNum > 5
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : stockNum > 0
+                                ? 'bg-amber-50 text-amber-800'
+                                : 'bg-rose-50 text-rose-700'
+                            }`}>
+                              {stockNum > 0 ? `${stockNum} unid.` : 'Agotado'}
                             </span>
                             {!p.activo && (
                               <span className="text-[11px] font-medium text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">
@@ -747,6 +793,43 @@ export default function App() {
                               Inactivo
                             </span>
                           )}
+                        </td>
+
+                        {/* Stock (Tablet y Desktop) */}
+                        <td className="py-3.5 px-4 text-center align-middle">
+                          <div className="inline-flex items-center gap-1.5">
+                            {isManagerMode && (
+                              <button
+                                onClick={(e) => adjustStock(p, -1, e)}
+                                className="w-6 h-6 rounded-md bg-slate-100 hover:bg-rose-100 hover:text-rose-700 text-slate-700 font-bold flex items-center justify-center text-xs transition active:scale-95 shadow-sm"
+                                title="Restar 1 unidad"
+                              >
+                                -
+                              </button>
+                            )}
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                                stockNum > 5
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200/80'
+                                  : stockNum > 0
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200/80'
+                                  : 'bg-rose-50 text-rose-700 border-rose-200/80'
+                              }`}
+                              title={stockNum > 5 ? 'Stock disponible' : stockNum > 0 ? 'Stock bajo' : 'Sin existencias'}
+                            >
+                              <Package className="w-3 h-3 opacity-70" />
+                              {stockNum > 0 ? `${stockNum} unid.` : 'Agotado'}
+                            </span>
+                            {isManagerMode && (
+                              <button
+                                onClick={(e) => adjustStock(p, 1, e)}
+                                className="w-6 h-6 rounded-md bg-slate-100 hover:bg-emerald-100 hover:text-emerald-700 text-slate-700 font-bold flex items-center justify-center text-xs transition active:scale-95 shadow-sm"
+                                title="Sumar 1 unidad"
+                              >
+                                +
+                              </button>
+                            )}
+                          </div>
                         </td>
 
                         {/* Precio Destacado */}
@@ -845,6 +928,7 @@ export default function App() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filteredProducts.map((p) => {
               const isQuickEditing = quickEditingId === p.id;
+              const stockNum = Number(p.stock ?? 0);
               return (
                 <div
                   key={p.id}
@@ -854,10 +938,22 @@ export default function App() {
                 >
                   <div>
                     <div className="flex items-start justify-between gap-2 mb-2">
-                      <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-md text-xs font-medium">
-                        <Tag className="w-3 h-3 text-slate-400" />
-                        {p.categoria || 'Sin categoría'}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-md text-xs font-medium">
+                          <Tag className="w-3 h-3 text-slate-400" />
+                          {p.categoria || 'Sin categoría'}
+                        </span>
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold border ${
+                          stockNum > 5
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200/80'
+                            : stockNum > 0
+                            ? 'bg-amber-50 text-amber-800 border-amber-200/80'
+                            : 'bg-rose-50 text-rose-700 border-rose-200/80'
+                        }`}>
+                          <Package className="w-3 h-3 opacity-70" />
+                          {stockNum > 0 ? `${stockNum} unid.` : 'Agotado'}
+                        </span>
+                      </div>
                       {!p.activo && (
                         <span className="text-[11px] font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
                           Inactivo
@@ -867,6 +963,30 @@ export default function App() {
                     <h3 className="font-bold text-slate-900 text-base line-clamp-2 leading-snug">
                       {p.nombre}
                     </h3>
+
+                    {/* Ajuste rápido de stock en tarjetas para encargado */}
+                    {isManagerMode && (
+                      <div className="mt-2.5 flex items-center justify-between bg-slate-50 px-2.5 py-1.5 rounded-xl border border-slate-200/70 text-xs">
+                        <span className="text-slate-500 font-medium">Stock:</span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={(e) => adjustStock(p, -1, e)}
+                            className="w-5 h-5 rounded bg-white hover:bg-rose-50 hover:text-rose-600 text-slate-700 font-bold flex items-center justify-center border shadow-xs transition"
+                            title="Restar 1 unidad"
+                          >
+                            -
+                          </button>
+                          <span className="font-bold text-slate-800 px-1">{stockNum}</span>
+                          <button
+                            onClick={(e) => adjustStock(p, 1, e)}
+                            className="w-5 h-5 rounded bg-white hover:bg-emerald-50 hover:text-emerald-600 text-slate-700 font-bold flex items-center justify-center border shadow-xs transition"
+                            title="Sumar 1 unidad"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
@@ -1112,25 +1232,49 @@ export default function App() {
                 )}
               </div>
 
-              {/* Precio en Bolivianos */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Precio (en Bolivianos - Bs.) *
-                </label>
-                <div className="relative">
-                  <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">
-                    Bs.
+              {/* Precio y Stock */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Precio en Bolivianos */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Precio (Bs.) *
+                  </label>
+                  <div className="relative">
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">
+                      Bs.
+                    </div>
+                    <input
+                      type="number"
+                      step="0.10"
+                      min="0"
+                      required
+                      value={formData.precio}
+                      onChange={(e) => setFormData({ ...formData, precio: e.target.value })}
+                      placeholder="0.00"
+                      className="w-full pl-10 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                    />
                   </div>
-                  <input
-                    type="number"
-                    step="0.10"
-                    min="0"
-                    required
-                    value={formData.precio}
-                    onChange={(e) => setFormData({ ...formData, precio: e.target.value })}
-                    placeholder="0.00"
-                    className="w-full pl-12 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-base font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
-                  />
+                </div>
+
+                {/* Stock en Unidades */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Stock (Unidades)
+                  </label>
+                  <div className="relative">
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                      <Package className="w-4 h-4" />
+                    </div>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={formData.stock}
+                      onChange={(e) => setFormData({ ...formData, stock: e.target.value })}
+                      placeholder="0"
+                      className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                    />
+                  </div>
                 </div>
               </div>
 
